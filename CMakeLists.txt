@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 4.0)
-project(vulkan_for_real_this_time_maybe)
+project(hello_triangle_vulkan)
 
 set(CMAKE_CXX_STANDARD 23)
 
-add_executable(vulkan_for_real_this_time_maybe main.cpp)
+add_executable(hello_triangle_vulkan main.cpp)
 
 find_package(Vulkan REQUIRED)
 target_include_directories(${PROJECT_NAME} PUBLIC ${Vulkan_INCLUDE_DIRS})
