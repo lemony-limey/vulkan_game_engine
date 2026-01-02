@@ -238,7 +238,7 @@ private:
                 bool isSuitable = device.getProperties().apiVersion >= VK_API_VERSION_1_3;
                 const auto qfpIter = std::ranges::find_if(
                     queueFamilies,
-                    [](vk::QueueFamilyProperties const& qfp) -> bool
+                    [](vk::QueueFamilyProperties const& qfp)
                     {
                         return (qfp.queueFlags & vk::QueueFlagBits::eGraphics) != static_cast<vk::QueueFlags>(0);
                     }
@@ -251,7 +251,7 @@ private:
                 {
                     auto extensionIter = std::ranges::find_if(
                         extensions,
-                        [extension](auto const& ext) -> bool
+                        [extension](auto const& ext)
                         {
                             return strcmp(ext.extensionName, extension) == 0;
                         }
