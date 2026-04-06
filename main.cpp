@@ -53,7 +53,7 @@ private:
     vk::raii::Queue                  queue          = nullptr;
 
     std::vector<const char *> requiredDeviceExtension = {
-        vk::KHRSwapchainExtensionName
+        vk::KHRSwapchainExtensionName,
     };
 
 
@@ -170,8 +170,7 @@ private:
 
     void setupDebugMessenger()
     {
-        if (!enableValidationLayers)
-            return;
+        if (!enableValidationLayers) { return; }
 
         vk::DebugUtilsMessageSeverityFlagsEXT severityFlags(
             vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |
@@ -201,20 +200,20 @@ private:
     }
 
 
-    bool isDeviceSuitable(vk::raii::PhysicalDevice const& physicalDevice)
+    bool isDeviceSuitable(vk::raii::PhysicalDevice const& physical_device)
     {
         // Check if the physicalDevice supports the Vulkan 1.3 API version
-        bool supportsVulkan1_3 = physicalDevice.getProperties().apiVersion >= VK_API_VERSION_1_3;
+        bool supportsVulkan1_3 = physical_device.getProperties().apiVersion >= VK_API_VERSION_1_3;
 
         // Check if any of the queue families support graphics operations
-        auto queueFamilies    = physicalDevice.getQueueFamilyProperties();
+        auto queueFamilies    = physical_device.getQueueFamilyProperties();
         bool supportsGraphics = std::ranges::any_of(
             queueFamilies,
             [](auto const& qfp) { return !!(qfp.queueFlags & vk::QueueFlagBits::eGraphics); }
         );
 
         // Check if all required physicalDevice extensions are available
-        auto availableDeviceExtensions     = physicalDevice.enumerateDeviceExtensionProperties();
+        auto availableDeviceExtensions     = physical_device.enumerateDeviceExtensionProperties();
         bool supportsAllRequiredExtensions =
                 std::ranges::all_of(
                     requiredDeviceExtension,
@@ -232,7 +231,7 @@ private:
 
         // Check if the physicalDevice supports the required features
         auto features =
-                physicalDevice
+                physical_device
                 .template getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features,
                     vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>();
         bool supportsRequiredFeatures = features.template get<vk::PhysicalDeviceVulkan13Features>().dynamicRendering &&
@@ -247,15 +246,25 @@ private:
     void pickPhysicalDevice()
     {
         std::vector<vk::raii::PhysicalDevice> physicalDevices = instance.enumeratePhysicalDevices();
-        auto const                            devIter         = std::ranges::find_if(
-            physicalDevices,
-            [&](auto const& physicalDevice) { return isDeviceSuitable(physicalDevice); }
-        );
-        if (devIter == physicalDevices.end())
+        std::cout << "Number of physical devices: " << physicalDevices.size() << std::endl;
+
+        if (physicalDevices.empty())
         {
-            throw std::runtime_error("failed to find a suitable GPU!");
+            throw std::runtime_error("there are no Vulkan-compatible GPUs on the device");
         }
-        physicalDevice = *devIter;
+
+
+
+        // auto const devIter = std::ranges::find_if(
+        //     physicalDevices,
+        //     [&](auto const& physical_device) { return isDeviceSuitable(physical_device); }
+        // );
+        // if (devIter == physicalDevices.end())
+        // {
+        //     throw std::runtime_error("failed to find a suitable GPU!");
+        // }
+        // physicalDevice = *devIter;
+        physicalDevice = physicalDevices.front();
     }
 
 
@@ -297,6 +306,7 @@ private:
             .queueCount = 1,
             .pQueuePriorities = &queuePriority
         };
+        requiredDeviceExtension.push_back("VK_KHR_portability_subset");
         vk::DeviceCreateInfo deviceCreateInfo{
             .pNext = &featureChain.get<vk::PhysicalDeviceFeatures2>(),
             .queueCreateInfoCount = 1,
@@ -321,6 +331,7 @@ private:
             extensions.push_back(vk::EXTDebugUtilsExtensionName);
         }
 
+        extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
         extensions.push_back(vk::KHRPortabilityEnumerationExtensionName);
 
         return extensions;
@@ -332,6 +343,7 @@ private:
         vk::DebugUtilsMessageTypeFlagsEXT             type,
         const vk::DebugUtilsMessengerCallbackDataEXT* pCallbackData,
         void*
+
     )
     {
         if (severity == vk::DebugUtilsMessageSeverityFlagBitsEXT::eError || severity ==
