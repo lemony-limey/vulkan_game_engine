@@ -1,7 +1,10 @@
 #include <algorithm>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <vector>
@@ -20,6 +23,7 @@ import vulkan_hpp;
 
 constexpr uint32_t WIDTH  = 800;
 constexpr uint32_t HEIGHT = 600;
+constexpr std::string SHADER_SPIRV_FILENAME = "../shaders/slang.spv";
 
 const std::vector<char const *> validationLayers = {
     "VK_LAYER_KHRONOS_validation"
@@ -51,6 +55,11 @@ private:
     vk::raii::PhysicalDevice         m_physicalDevice = nullptr;
     vk::raii::Device                 m_device         = nullptr;
     vk::raii::Queue                  m_queue          = nullptr;
+    vk::raii::SwapchainKHR           m_swapChain      = nullptr;
+    std::vector<vk::Image>           m_swapChainImages;
+    std::vector<vk::raii::ImageView> m_swapChainImageViews;
+    vk::SurfaceFormatKHR             m_swapChainSurfaceFormat;
+    vk::Extent2D                     m_swapChainExtent;
 
     std::vector<const char *> m_requiredDeviceExtension = {
         vk::KHRSwapchainExtensionName,
@@ -76,6 +85,9 @@ private:
         createSurface();
         pickPhysicalDevice();
         createLogicalDevice();
+        createSwapChain();
+        createImageViews();
+        createGraphicsPipeline();
     }
 
 
@@ -317,6 +329,175 @@ private:
 
         m_device = vk::raii::Device(m_physicalDevice, deviceCreateInfo);
         m_queue  = vk::raii::Queue(m_device, queueIndex, 0);
+    }
+
+
+    vk::SurfaceFormatKHR chooseSwapSurfaceFormat(std::vector<vk::SurfaceFormatKHR> const &availableFormats)
+    {
+        assert(!availableFormats.empty());
+
+        const auto formatIt = std::ranges::find_if(
+            availableFormats,
+            [](const auto &format)
+            {
+                return format.format == vk::Format::eB8G8R8Srgb
+                    && format.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear;
+            }
+        );
+
+        return formatIt != availableFormats.end() ? *formatIt :availableFormats[0];
+    }
+
+
+    vk::PresentModeKHR chooseSwapPresentMode(std::vector<vk::PresentModeKHR> const &availablePresentModes)
+    {
+        assert(std::ranges::any_of(availablePresentModes, [](auto presentMode) { return presentMode == vk::PresentModeKHR::eFifo; }));
+        return std::ranges::any_of(
+            availablePresentModes,
+            [](const vk::PresentModeKHR value)
+            {
+                return vk::PresentModeKHR::eMailbox == value;
+            }) ?
+            vk::PresentModeKHR::eMailbox :
+            vk::PresentModeKHR::eFifo;
+    }
+
+
+    // Extent = resolution
+    vk::Extent2D chooseSwapExtent(vk::SurfaceCapabilitiesKHR const &capabilities)
+    {
+        if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max())
+        {
+            return capabilities.currentExtent;
+        }
+        int width, height;
+        glfwGetFramebufferSize(m_window, &width, &height);
+
+        return {
+            std::clamp<uint32_t>(width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width),
+            std::clamp<uint32_t>(height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height)
+        };
+    }
+
+
+    uint32_t chooseSwapMinImageCount(vk::SurfaceCapabilitiesKHR const & surfaceCapabilities)
+    {
+        auto minImageCount = std::max(3u, surfaceCapabilities.minImageCount);
+        if ((0 < surfaceCapabilities.maxImageCount) && (surfaceCapabilities.maxImageCount < minImageCount))
+        {
+            minImageCount = surfaceCapabilities.maxImageCount;
+        }
+        return minImageCount;
+    }
+
+
+    void createSwapChain()
+    {
+        vk::SurfaceCapabilitiesKHR surfaceCapabilities = m_physicalDevice.getSurfaceCapabilitiesKHR(*m_surface);
+        m_swapChainExtent = chooseSwapExtent(surfaceCapabilities);
+        uint32_t minImageCount = chooseSwapMinImageCount(surfaceCapabilities);
+
+        std::vector<vk::SurfaceFormatKHR> availableFormats = m_physicalDevice.getSurfaceFormatsKHR(*m_surface);
+        m_swapChainSurfaceFormat = chooseSwapSurfaceFormat(availableFormats);
+
+        std::vector<vk::PresentModeKHR> availablePresentModes = m_physicalDevice.getSurfacePresentModesKHR(*m_surface);
+        vk::PresentModeKHR presentMode = chooseSwapPresentMode(availablePresentModes);
+
+        vk::SwapchainCreateInfoKHR swapChainCreateInfo{
+            .surface = *m_surface,
+            .minImageCount = minImageCount,
+            .imageFormat = m_swapChainSurfaceFormat.format,
+            .imageColorSpace = m_swapChainSurfaceFormat.colorSpace,
+            .imageExtent = m_swapChainExtent,
+            .imageArrayLayers = 1,  // number of layers each image consists of
+            .imageUsage = vk::ImageUsageFlagBits::eColorAttachment,
+            .imageSharingMode = vk::SharingMode::eExclusive,
+            .preTransform = surfaceCapabilities.currentTransform,
+            .compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque,
+            .presentMode = presentMode,
+            .clipped = true
+        };
+        swapChainCreateInfo.oldSwapchain = nullptr;
+
+        m_swapChain = vk::raii::SwapchainKHR(m_device, swapChainCreateInfo);
+        m_swapChainImages = m_swapChain.getImages();
+    }
+
+
+    void createImageViews()
+    {
+        assert(m_swapChainImageViews.empty());
+
+        vk::ImageViewCreateInfo imageViewCreateInfo{
+            .viewType = vk::ImageViewType::e2D,
+            .format = m_swapChainSurfaceFormat.format,
+            .subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 }
+        };
+
+        for (auto &image : m_swapChainImages)
+        {
+            imageViewCreateInfo.image = image;
+            m_swapChainImageViews.emplace_back(m_device, imageViewCreateInfo);
+        }
+    }
+
+
+    void createGraphicsPipeline()
+    {
+        vk::raii::ShaderModule shaderModule = createShaderModule(readFile(SHADER_SPIRV_FILENAME));
+        vk::PipelineShaderStageCreateInfo vertShaderStageInfo{
+            .stage = vk::ShaderStageFlagBits::eVertex,  // stage we're currently operating in
+            .module = shaderModule,
+            .pName = "vertMain"
+        };
+        vk::PipelineShaderStageCreateInfo fragShaderStageInfo{
+            .stage = vk::ShaderStageFlagBits::eFragment,  // stage we're currently operating in
+            .module = shaderModule,
+            .pName = "fragMain"
+        };
+        vk::PipelineShaderStageCreateInfo shaderStages[] = {
+            vertShaderStageInfo,
+            fragShaderStageInfo
+        };
+    }
+
+
+    static std::vector<char> readFile(const std::string& filename)
+    {
+        std::cout << "pwd: " << std::filesystem::current_path() << "\n";
+        std::cout << "file: " << filename << std::endl;
+        // ate = start reading at the end of the file; binary = interpret file
+        // as a binary (i.e., no text transformations).
+        std::ifstream file(filename, std::ios::ate | std::ios::binary);
+
+        if (!file.is_open())
+        {
+            throw std::runtime_error("failed to open file!");
+        }
+
+        // Since we're starting at the end of the file, the starting position
+        // is equal to the size of the file.
+        std::vector<char> buffer(file.tellg());
+
+        file.seekg(0, std::ios::beg);
+        file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+
+        file.close();
+
+        return buffer;
+    }
+
+
+    // Create a shader module from the SPIR-V bytecode.
+    [[nodiscard]] vk::raii::ShaderModule createShaderModule(const std::vector<char>& code) const
+    {
+        vk::ShaderModuleCreateInfo createInfo{
+            .codeSize = code.size() * sizeof(char),
+            .pCode = reinterpret_cast<const uint32_t*>(code.data())
+        };
+
+        vk::raii::ShaderModule shaderModule{ m_device, createInfo };
+        return shaderModule;
     }
 
 
