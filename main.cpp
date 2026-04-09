@@ -47,19 +47,21 @@ public:
     }
 
 private:
-    GLFWwindow*                      m_window = nullptr;
+    GLFWwindow*                      m_window           = nullptr;
     vk::raii::Context                m_context;
-    vk::raii::Instance               m_instance       = nullptr;
-    vk::raii::DebugUtilsMessengerEXT m_debugMessenger = nullptr;
-    vk::raii::SurfaceKHR             m_surface        = nullptr;
-    vk::raii::PhysicalDevice         m_physicalDevice = nullptr;
-    vk::raii::Device                 m_device         = nullptr;
-    vk::raii::Queue                  m_queue          = nullptr;
-    vk::raii::SwapchainKHR           m_swapChain      = nullptr;
+    vk::raii::Instance               m_instance         = nullptr;
+    vk::raii::DebugUtilsMessengerEXT m_debugMessenger   = nullptr;
+    vk::raii::SurfaceKHR             m_surface          = nullptr;
+    vk::raii::PhysicalDevice         m_physicalDevice   = nullptr;
+    vk::raii::Device                 m_device           = nullptr;
+    vk::raii::Queue                  m_queue            = nullptr;
+    vk::raii::SwapchainKHR           m_swapChain        = nullptr;
     std::vector<vk::Image>           m_swapChainImages;
     std::vector<vk::raii::ImageView> m_swapChainImageViews;
     vk::SurfaceFormatKHR             m_swapChainSurfaceFormat;
     vk::Extent2D                     m_swapChainExtent;
+    vk::raii::PipelineLayout         m_pipelineLayout   = nullptr;
+    vk::raii::Pipeline               m_graphicsPipeline = nullptr;
 
     std::vector<const char *> m_requiredDeviceExtension = {
         vk::KHRSwapchainExtensionName,
@@ -259,14 +261,12 @@ private:
     void pickPhysicalDevice()
     {
         std::vector<vk::raii::PhysicalDevice> physicalDevices = m_instance.enumeratePhysicalDevices();
-        std::cout << "Number of physical devices: " << physicalDevices.size() << std::endl;
+        // std::cout << "Number of physical devices: " << physicalDevices.size() << std::endl;
 
         if (physicalDevices.empty())
         {
             throw std::runtime_error("there are no Vulkan-compatible GPUs on the device");
         }
-
-
 
         // auto const devIter = std::ranges::find_if(
         //     physicalDevices,
@@ -444,28 +444,136 @@ private:
 
     void createGraphicsPipeline()
     {
+        // Below is state for the shader stages.
+
         vk::raii::ShaderModule shaderModule = createShaderModule(readFile(SHADER_SPIRV_FILENAME));
         vk::PipelineShaderStageCreateInfo vertShaderStageInfo{
             .stage = vk::ShaderStageFlagBits::eVertex,  // stage we're currently operating in
             .module = shaderModule,
-            .pName = "vertMain"
+            .pName = "vertMain",
         };
         vk::PipelineShaderStageCreateInfo fragShaderStageInfo{
             .stage = vk::ShaderStageFlagBits::eFragment,  // stage we're currently operating in
             .module = shaderModule,
-            .pName = "fragMain"
+            .pName = "fragMain",
         };
         vk::PipelineShaderStageCreateInfo shaderStages[] = {
             vertShaderStageInfo,
-            fragShaderStageInfo
+            fragShaderStageInfo,
         };
+
+        // Below is fixed-function state.
+
+        vk::PipelineVertexInputStateCreateInfo vertexInputInfo;
+
+        // Lists of input vertices will represent triangles.
+        vk::PipelineInputAssemblyStateCreateInfo inputAssembly{
+            .topology = vk::PrimitiveTopology::eTriangleList,
+        };
+
+        vk::Rect2D scissor{
+            vk::Offset2D{ 0, 0 },
+            m_swapChainExtent,
+        };
+
+        std::vector<vk::DynamicState> dynamicStates = {
+            vk::DynamicState::eViewport,
+            vk::DynamicState::eScissor,
+        };
+        vk::PipelineDynamicStateCreateInfo dynamicState{
+            .dynamicStateCount = static_cast<uint32_t>(dynamicStates.size()),
+            .pDynamicStates    = dynamicStates.data(),
+        };
+
+        vk::PipelineViewportStateCreateInfo viewportState{
+            .viewportCount = 1,
+            .scissorCount  = 1,
+        };
+
+        vk::PipelineRasterizationStateCreateInfo rasterizer{
+            // setting to true clamps fragments beyond the near and far planes,
+            // which can be useful for shadow mapping.
+            .depthClampEnable = vk::False,
+            .rasterizerDiscardEnable = vk::False,
+            .polygonMode = vk::PolygonMode::eFill,
+            .cullMode = vk::CullModeFlagBits::eBack,
+            .frontFace = vk::FrontFace::eClockwise,
+            .depthBiasEnable = vk::False,
+            // line thickness in fragments (pixels).
+            .lineWidth = 1.0f,
+        };
+
+        // Multisampling is a way to perform antialiasing, and is disabled for
+        // now.
+        vk::PipelineMultisampleStateCreateInfo multisampling{
+            .rasterizationSamples = vk::SampleCountFlagBits::e1,
+            .sampleShadingEnable  = vk::False,
+        };
+
+        // We don''t have depth and stencil buffers yet.
+        vk::PipelineDepthStencilStateCreateInfo depthAndStencilBuffers{};
+
+        // Configure colour blending (currently disabled).
+        vk::PipelineColorBlendAttachmentState colourBlendAttachment{
+            .blendEnable    = vk::False,
+            .colorWriteMask = vk::ColorComponentFlagBits::eR
+                | vk::ColorComponentFlagBits::eG
+                | vk::ColorComponentFlagBits::eB
+                | vk::ColorComponentFlagBits::eA
+        };
+        vk::PipelineColorBlendStateCreateInfo colourBlending{
+            .logicOpEnable   = vk::False,
+            .logicOp         = vk::LogicOp::eCopy,
+            .attachmentCount = 1,
+            .pAttachments    = &colourBlendAttachment,
+        };
+
+        // Specify the pipeline layout after having initialised all of the fixed-function
+        // state.
+
+        // Create the pipeline layout.
+        vk::PipelineLayoutCreateInfo pipelineLayoutInfo{
+            .setLayoutCount         = 0,
+            .pushConstantRangeCount = 0,
+        };
+        m_pipelineLayout = vk::raii::PipelineLayout(m_device, pipelineLayoutInfo);
+
+        vk::StructureChain<vk::GraphicsPipelineCreateInfo, vk::PipelineRenderingCreateInfo> pipelineCreateInfoChain = {
+            {
+                .stageCount = 2,
+                .pStages = shaderStages,
+                .pVertexInputState = &vertexInputInfo,
+                .pInputAssemblyState = &inputAssembly,
+                .pViewportState = &viewportState,
+                .pRasterizationState = &rasterizer,
+                .pMultisampleState = &multisampling,
+                .pColorBlendState = &colourBlending,
+                .pDynamicState = &dynamicState,
+                .layout = m_pipelineLayout,
+                // RenderPass is nullptr because we are using dynamic rendering.
+                .renderPass = nullptr,
+            },
+            {
+                .colorAttachmentCount = 1,
+                .pColorAttachmentFormats = &m_swapChainSurfaceFormat.format,
+            }
+        };
+
+        // Create the graphics pipeline.
+
+        m_graphicsPipeline = vk::raii::Pipeline(
+            m_device,
+            // We are not using a PipelineCache at the moment, but will later on.
+            nullptr,
+            pipelineCreateInfoChain.get<vk::GraphicsPipelineCreateInfo>()
+        );
     }
 
 
     static std::vector<char> readFile(const std::string& filename)
     {
-        std::cout << "pwd: " << std::filesystem::current_path() << "\n";
-        std::cout << "file: " << filename << std::endl;
+        // std::cout << "pwd: " << std::filesystem::current_path() << "\n";
+        // std::cout << "file: " << filename << std::endl;
         // ate = start reading at the end of the file; binary = interpret file
         // as a binary (i.e., no text transformations).
         std::ifstream file(filename, std::ios::ate | std::ios::binary);
