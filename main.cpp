@@ -74,7 +74,9 @@ private:
     // Required device extensions.
     std::vector<const char *> m_requiredDeviceExtension = {
         vk::KHRSwapchainExtensionName,
-        "VK_KHR_portability_subset"
+        "VK_KHR_portability_subset",
+        vk::KHRSynchronization2ExtensionName,
+        vk::KHRDynamicRenderingExtensionName,
     };
 
 
@@ -340,36 +342,37 @@ private:
         std::vector<vk::QueueFamilyProperties> queueFamilyProperties = m_physicalDevice.getQueueFamilyProperties();
 
         // get the first index into queueFamilyProperties which supports both graphics and present
-        uint32_t queueIndex = ~0;
         for (uint32_t qfpIndex = 0; qfpIndex < queueFamilyProperties.size(); qfpIndex++)
         {
             if ((queueFamilyProperties[qfpIndex].queueFlags & vk::QueueFlagBits::eGraphics) &&
                 m_physicalDevice.getSurfaceSupportKHR(qfpIndex, *m_surface))
             {
                 // found a queue family that supports both graphics and present
-                queueIndex = qfpIndex;
+                m_queueIndex = qfpIndex;
                 break;
             }
         }
-        if (queueIndex == ~0)
+        if (m_queueIndex == ~0)
         {
             throw std::runtime_error("Could not find a queue for graphics and present -> terminating");
         }
 
         // query for Vulkan 1.3 features
-        vk::StructureChain<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features,
-            vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT> featureChain = {
-            {},
-            // vk::PhysicalDeviceFeatures2
-            {.dynamicRendering = true},
-            // vk::PhysicalDeviceVulkan13Features
-            {.extendedDynamicState = true} // vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT
+        vk::StructureChain<vk::PhysicalDeviceFeatures2,
+                           vk::PhysicalDeviceVulkan11Features,
+                           vk::PhysicalDeviceVulkan13Features,
+                           vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>
+            featureChain = {
+            {},                                                          // vk::PhysicalDeviceFeatures2
+            {.shaderDrawParameters = true},                              // vk::PhysicalDeviceVulkan11Features
+            {.synchronization2 = true, .dynamicRendering = true},        // vk::PhysicalDeviceVulkan13Features
+            {.extendedDynamicState = true}                               // vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT
         };
 
         // create a Device
         float                     queuePriority = 0.5f;
         vk::DeviceQueueCreateInfo deviceQueueCreateInfo{
-            .queueFamilyIndex = queueIndex,
+            .queueFamilyIndex = m_queueIndex,
             .queueCount = 1,
             .pQueuePriorities = &queuePriority
         };
@@ -382,7 +385,7 @@ private:
         };
 
         m_device = vk::raii::Device(m_physicalDevice, deviceCreateInfo);
-        m_queue  = vk::raii::Queue(m_device, queueIndex, 0);
+        m_queue  = vk::raii::Queue(m_device, m_queueIndex, 0);
     }
 
 
@@ -525,11 +528,6 @@ private:
             .topology = vk::PrimitiveTopology::eTriangleList,
         };
 
-        vk::Rect2D scissor{
-            vk::Offset2D{ 0, 0 },
-            m_swapChainExtent,
-        };
-
         std::vector<vk::DynamicState> dynamicStates = {
             vk::DynamicState::eViewport,
             vk::DynamicState::eScissor,
@@ -563,9 +561,6 @@ private:
             .rasterizationSamples = vk::SampleCountFlagBits::e1,
             .sampleShadingEnable  = vk::False,
         };
-
-        // We don''t have depth and stencil buffers yet.
-        vk::PipelineDepthStencilStateCreateInfo depthAndStencilBuffers{};
 
         // Configure colour blending (currently disabled).
         vk::PipelineColorBlendAttachmentState colourBlendAttachment{
@@ -665,7 +660,7 @@ private:
 
     void createCommandPool()
     {
-        vk::CommandPoolCreateInfo poolInfo{
+        const vk::CommandPoolCreateInfo poolInfo{
             .flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
             .queueFamilyIndex = m_queueIndex,
         };
@@ -881,11 +876,13 @@ private:
         switch (result)
         {
             case vk::Result::eSuccess:
+                // std::cout << "Success" << std::endl;
                 break;
             case vk::Result::eSuboptimalKHR:
                 std::cout << "vk::Queue::presentKHR returned vk::Result::eSuboptimalKHR !\n";
                 break;
             default:
+                std::cout << "Unexpected result" << std::endl;
                 break;        // an unexpected result is returned!
         }
     }
