@@ -62,7 +62,16 @@ private:
     vk::Extent2D                     m_swapChainExtent;
     vk::raii::PipelineLayout         m_pipelineLayout   = nullptr;
     vk::raii::Pipeline               m_graphicsPipeline = nullptr;
+    uint32_t                         m_queueIndex       = ~0;
+    vk::raii::CommandPool            m_commandPool      = nullptr;
+    vk::raii::CommandBuffer          m_commandBuffer    = nullptr;
 
+    // Synchronisation primitives.
+    vk::raii::Semaphore m_presentCompleteSemaphore = nullptr;
+    vk::raii::Semaphore m_renderFinishedSemaphore  = nullptr;
+    vk::raii::Fence     m_drawFence                = nullptr;
+
+    // Required device extensions.
     std::vector<const char *> m_requiredDeviceExtension = {
         vk::KHRSwapchainExtensionName,
         "VK_KHR_portability_subset"
@@ -90,6 +99,9 @@ private:
         createSwapChain();
         createImageViews();
         createGraphicsPipeline();
+        createCommandPool();
+        createCommandBuffer();
+        createSyncObjects();
     }
 
 
@@ -98,7 +110,12 @@ private:
         while (!glfwWindowShouldClose(m_window))
         {
             glfwPollEvents();
+            drawFrame();
         }
+
+        // Wait for logical device to finish all asynchronous operations
+        // before exiting mainLoop and performing cleanup.
+        m_device.waitIdle();
     }
 
 
@@ -183,6 +200,24 @@ private:
     }
 
 
+    std::vector<const char *> getRequiredInstanceExtensions()
+    {
+        uint32_t glfwExtensionCount = 0;
+        auto     glfwExtensions     = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+
+        std::vector extensions(glfwExtensions, glfwExtensions + glfwExtensionCount);
+        if (enableValidationLayers)
+        {
+            extensions.push_back(vk::EXTDebugUtilsExtensionName);
+        }
+
+        extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+        extensions.push_back(vk::KHRPortabilityEnumerationExtensionName);
+
+        return extensions;
+    }
+
+
     void setupDebugMessenger()
     {
         if (!enableValidationLayers) { return; }
@@ -201,6 +236,25 @@ private:
             .pfnUserCallback = &debugCallback
         };
         m_debugMessenger = m_instance.createDebugUtilsMessengerEXT(debugUtilsMessengerCreateInfoEXT);
+    }
+
+
+    static VKAPI_ATTR vk::Bool32 VKAPI_CALL debugCallback(
+        vk::DebugUtilsMessageSeverityFlagBitsEXT      severity,
+        vk::DebugUtilsMessageTypeFlagsEXT             type,
+        const vk::DebugUtilsMessengerCallbackDataEXT* pCallbackData,
+        void*
+
+    )
+    {
+        if (severity == vk::DebugUtilsMessageSeverityFlagBitsEXT::eError || severity ==
+            vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning)
+        {
+            std::cerr << "validation layer: type " << to_string(type) << " msg: " << pCallbackData->pMessage <<
+                    std::endl;
+        }
+
+        return vk::False;
     }
 
 
@@ -609,40 +663,231 @@ private:
     }
 
 
-    std::vector<const char *> getRequiredInstanceExtensions()
+    void createCommandPool()
     {
-        uint32_t glfwExtensionCount = 0;
-        auto     glfwExtensions     = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+        vk::CommandPoolCreateInfo poolInfo{
+            .flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
+            .queueFamilyIndex = m_queueIndex,
+        };
 
-        std::vector extensions(glfwExtensions, glfwExtensions + glfwExtensionCount);
-        if (enableValidationLayers)
-        {
-            extensions.push_back(vk::EXTDebugUtilsExtensionName);
-        }
-
-        extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
-        extensions.push_back(vk::KHRPortabilityEnumerationExtensionName);
-
-        return extensions;
+        m_commandPool = vk::raii::CommandPool(m_device, poolInfo);
     }
 
 
-    static VKAPI_ATTR vk::Bool32 VKAPI_CALL debugCallback(
-        vk::DebugUtilsMessageSeverityFlagBitsEXT      severity,
-        vk::DebugUtilsMessageTypeFlagsEXT             type,
-        const vk::DebugUtilsMessengerCallbackDataEXT* pCallbackData,
-        void*
+    void createCommandBuffer()
+    {
+        vk::CommandBufferAllocateInfo allocInfo{
+            .commandPool = m_commandPool,
+            // Primary means the buffer can be submitted to a queue for execution,
+            // but cannot be called from other command buffers.
+            // Secondary buffers cannot be submitted to a queue directly, but can
+            // be called from primary command buffers.
+            .level = vk::CommandBufferLevel::ePrimary,
+            .commandBufferCount = 1,
+        };
 
+        m_commandBuffer = std::move(vk::raii::CommandBuffers(m_device, allocInfo).front());
+    }
+
+
+    void recordCommandBuffer(uint32_t imageIndex)
+    {
+        m_commandBuffer.begin({});
+
+        // Transition the image layout for rendering.
+        transitionImageLayout(
+            imageIndex,
+            vk::ImageLayout::eUndefined,
+            vk::ImageLayout::eColorAttachmentOptimal,
+            // srcAccessMask (no need to wait for previous operations).
+            {},
+            vk::AccessFlagBits2::eColorAttachmentWrite,
+            vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            vk::PipelineStageFlagBits2::eColorAttachmentOutput
+        );
+
+        // Set up the colour attachment.
+        vk::ClearValue clearColour = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 1.0f);
+        vk::RenderingAttachmentInfo attachmentInfo = {
+            // imageView specifies which image view to render to.
+            .imageView = m_swapChainImageViews[imageIndex],
+            .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+            .loadOp = vk::AttachmentLoadOp::eClear,
+            .storeOp = vk::AttachmentStoreOp::eStore,
+            .clearValue = clearColour,
+        };
+
+        // Set up the rendering info.
+        vk::RenderingInfo renderingInfo = {
+            .renderArea = {
+                .offset = {0, 0},
+                .extent = m_swapChainExtent,
+            },
+            .layerCount = 1,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &attachmentInfo,
+        };
+
+        // Begin rendering.
+        m_commandBuffer.beginRendering(renderingInfo);
+
+        // Rendering commands go here.
+        // Bind to the pipeline.
+        m_commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *m_graphicsPipeline);
+        // We previously set the viewport and scissor state for this pipeline to be dynamic,
+        // so we need to set them in the command buffer before issuing our draw command.
+        m_commandBuffer.setViewport(
+            0,
+            vk::Viewport(
+                0.0f,
+                0.0f,
+                static_cast<float>(m_swapChainExtent.width),
+                static_cast<float>(m_swapChainExtent.height),
+                0.0f,
+                1.0f
+            )
+        );
+        m_commandBuffer.setScissor(
+            0,
+            vk::Rect2D(
+                vk::Offset2D(0, 0),
+                m_swapChainExtent
+            )
+        );
+
+        m_commandBuffer.draw(
+            3, // vertexCount
+            1, // instanceCount (1 is specified because instanced rendering is not used here)
+            0, // firstVertex (offset into the vertex buffer for the lowest value of SV_VertexId)
+            0  // firstInstance (used as an offset for instanced rendering, defines the lowest SV_VertexId)
+        );
+
+
+        // End rendering.
+        m_commandBuffer.endRendering();
+
+        // Transition the swapchain image to vk::ImageLayout::ePresentSrcKHR
+        // for presentation.
+        transitionImageLayout(
+            imageIndex,
+            vk::ImageLayout::eColorAttachmentOptimal,
+            vk::ImageLayout::ePresentSrcKHR,
+            vk::AccessFlagBits2::eColorAttachmentWrite,
+            {},
+            vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            vk::PipelineStageFlagBits2::eBottomOfPipe
+        );
+
+        // We've finished recording the command buffer.
+        m_commandBuffer.end();
+    }
+
+
+    /**
+     * Before we can start rendering to an image, we need to transition its
+     * layout to one that is suitable for rendering.
+     * In Vulkan, images can be in different layouts that are optimised for
+     * different operations.
+     * For example, an image can be in a layout that is optimal for presenting
+     * to the screen, or in a layout that is optimal for being used as a
+     * color attachment.
+     */
+    void transitionImageLayout(
+        uint32_t                imageIndex,
+        vk::ImageLayout         oldLayout,
+        vk::ImageLayout         newLayout,
+        vk::AccessFlags2        srcAccessMask,
+        vk::AccessFlags2        destAccessMask,
+        vk::PipelineStageFlags2 srcStageMask,
+        vk::PipelineStageFlags2 destStageMask
     )
     {
-        if (severity == vk::DebugUtilsMessageSeverityFlagBitsEXT::eError || severity ==
-            vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning)
-        {
-            std::cerr << "validation layer: type " << to_string(type) << " msg: " << pCallbackData->pMessage <<
-                    std::endl;
-        }
+        vk::ImageMemoryBarrier2 barrier = {
+            .srcStageMask = srcStageMask,
+            .srcAccessMask = srcAccessMask,
+            .dstStageMask = destStageMask,
+            .dstAccessMask = destAccessMask,
+            .oldLayout = oldLayout,
+            .newLayout = newLayout,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = m_swapChainImages[imageIndex],
+            .subresourceRange = {
+                .aspectMask = vk::ImageAspectFlagBits::eColor,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1
+            }
+        };
 
-        return vk::False;
+        vk::DependencyInfo dependencyInfo = {
+            .dependencyFlags = {},
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers = &barrier,
+        };
+
+        m_commandBuffer.pipelineBarrier2(dependencyInfo);
+    }
+
+
+    void createSyncObjects()
+    {
+        m_presentCompleteSemaphore = vk::raii::Semaphore(m_device, vk::SemaphoreCreateInfo());
+        m_renderFinishedSemaphore  = vk::raii::Semaphore(m_device, vk::SemaphoreCreateInfo());
+        m_drawFence = vk::raii::Fence(
+            m_device,
+            { .flags = vk::FenceCreateFlagBits::eSignaled }
+        );
+    }
+
+
+    void drawFrame()
+    {
+        auto fenceResult = m_device.waitForFences(*m_drawFence, vk::True, UINT64_MAX);
+        if (fenceResult != vk::Result::eSuccess)
+        {
+            throw std::runtime_error("failed to wait for fence!");
+        }
+        m_device.resetFences(*m_drawFence);
+
+        auto [result, imageIndex] = m_swapChain.acquireNextImage(UINT64_MAX, *m_presentCompleteSemaphore, nullptr);
+
+        recordCommandBuffer(imageIndex);
+
+        m_queue.waitIdle();
+        vk::PipelineStageFlags waitDestinationStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput);
+        const vk::SubmitInfo submitInfo{
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &*m_presentCompleteSemaphore,
+            .pWaitDstStageMask = &waitDestinationStageMask,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &*m_commandBuffer,
+            .signalSemaphoreCount = 1,
+            .pSignalSemaphores = &*m_renderFinishedSemaphore,
+        };
+
+        m_queue.submit(submitInfo, *m_drawFence);
+
+        const vk::PresentInfoKHR presentInfoKHR{
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &*m_renderFinishedSemaphore,
+            .swapchainCount = 1,
+            .pSwapchains = &*m_swapChain,
+            .pImageIndices = &imageIndex
+        };
+
+        result = m_queue.presentKHR(presentInfoKHR);
+        switch (result)
+        {
+            case vk::Result::eSuccess:
+                break;
+            case vk::Result::eSuboptimalKHR:
+                std::cout << "vk::Queue::presentKHR returned vk::Result::eSuboptimalKHR !\n";
+                break;
+            default:
+                break;        // an unexpected result is returned!
+        }
     }
 };
 
