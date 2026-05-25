@@ -10,7 +10,7 @@ static float3 colours[3] = float3[](
     float3(0.0, 0.0, 1.0)
 );
 
-struct VertexOutput
+struct VertexShaderOutput
 {
     float3 colour;
     float4 sv_position : SV_Position;
@@ -18,9 +18,9 @@ struct VertexOutput
 
 // vid = vertex_id
 [shader("vertex")]
-VertexOutput vertMain(uint vid : SV_VertexID)
+VertexShaderOutput vertMain(uint vid : SV_VertexID)
 {
-    VertexOutput output;
+    VertexShaderOutput output;
     output.sv_position = float4(positions[vid], 0.0, 1.0);
     output.colour = colours[vid];
     return output;
@@ -28,7 +28,7 @@ VertexOutput vertMain(uint vid : SV_VertexID)
 
 // inVert = input vertex
 [shader("fragment")]
-float4 fragMain(VertexOutput inVert) : SV_Target
+float4 fragMain(VertexShaderOutput inVert) : SV_Target
 {
     float3 colour = inVert.colour;
     // Add the alpha value of 1.0 to set colour to opaque.

@@ -6,12 +6,18 @@ set(CMAKE_CXX_STANDARD 23)
 add_executable(hello_triangle_vulkan main.cpp)
 
 # Find Vulkan
-find_package(Vulkan REQUIRED)
+find_package(Vulkan REQUIRED glslc)
 
 # Require Vulkan version ≥ 1.3.256 (earliest version when the Vulkan module was available)
 if( ${Vulkan_VERSION} VERSION_LESS "1.3.256" )
     message( FATAL_ERROR "Minimum required Vulkan version for C++ modules is 1.3.256. "
             "Found ${Vulkan_VERSION}."
+    )
+endif()
+
+# If the shader compiler can't be found, exit.
+if( NOT ${Vulkan_glslc} )
+    message( FATAL_ERROR "Could not find slangc "
     )
 endif()
 
@@ -29,6 +35,9 @@ find_package(glfw3 CONFIG REQUIRED)
 target_link_libraries(${PROJECT_NAME} glfw)
 
 set (SHADERS_DIR ${CMAKE_CURRENT_LIST_DIR}/shaders)
+
+message( STATUS "Found Vulkan: ${Vulkan_INCLUDE_DIRS}" )
+message( STATUS "Found slangcc: ${SLANGC_EXECUTABLE}" )
 
 # Compile vulkan shaders
 function (add_slang_shader_target TARGET)

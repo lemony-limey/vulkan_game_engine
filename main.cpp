@@ -79,7 +79,6 @@ private:
         vk::KHRDynamicRenderingExtensionName,
     };
 
-
     void initWindow()
     {
         glfwInit();
@@ -207,22 +206,22 @@ private:
         uint32_t glfwExtensionCount = 0;
         auto     glfwExtensions     = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
 
-        std::vector extensions(glfwExtensions, glfwExtensions + glfwExtensionCount);
+        std::vector instance_extensions(glfwExtensions, glfwExtensions + glfwExtensionCount);
         if (enableValidationLayers)
         {
-            extensions.push_back(vk::EXTDebugUtilsExtensionName);
+            instance_extensions.push_back(vk::EXTDebugUtilsExtensionName);
         }
 
-        extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
-        extensions.push_back(vk::KHRPortabilityEnumerationExtensionName);
+        instance_extensions.push_back(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+        instance_extensions.push_back(vk::KHRPortabilityEnumerationExtensionName);
 
-        return extensions;
+        return instance_extensions;
     }
 
 
     void setupDebugMessenger()
     {
-        if (!enableValidationLayers) { return; }
+        if constexpr (!enableValidationLayers) { return; }
 
         vk::DebugUtilsMessageSeverityFlagsEXT severityFlags(
             vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning |

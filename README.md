@@ -1,0 +1,4 @@
+Remember:
+When running this on a new system, add the following environment variables beforehand:
+  - VK_ICD_FILENAMES = "vulkansdk/macOS/share/vulkan/icd.d/MoltenVK_icd.json"
+  - VK_LAYER_PATH = "vulkansdk/macOS/share/vulkan/explicit_layer.d"
