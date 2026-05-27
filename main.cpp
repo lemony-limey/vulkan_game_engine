@@ -20,12 +20,63 @@ import vulkan_hpp;
 
 #define GLFW_INCLUDE_VULKAN        // REQUIRED only for GLFW CreateWindowSurface.
 #include <GLFW/glfw3.h>
+#include <glm/glm.hpp>
+
+struct Vertex
+{
+    glm::vec2 position;
+    glm::vec3 colour;
+
+    // We've specified here that each space in the buffer will contain a Vertex object.
+    static vk::VertexInputBindingDescription getBindingDescription()
+    {
+        return {
+            .binding = 0,
+            .stride = sizeof(Vertex),
+            // eVertex: move to the next data entry in the vertex buffer after each vertex
+            // eInstance: move to the next data entry after each instance (we are not using
+            //      instanced rendering here).
+            .inputRate = vk::VertexInputRate::eVertex,
+        };
+    }
+
+    // Attribute description describes the layout of each of the components within one vertex
+    // element in the vertex buffer.
+    // We've defined in here that location 0 contains the vertex's position, which we've
+    // specified the location of in the vertex struct.
+    //
+    // We've then also specified that the second position (location 1) will contain the colour,
+    // which we've specified the location of in the vertex struct also.
+    static std::array<vk::VertexInputAttributeDescription, 2> getAttributeDescriptions()
+    {
+        return {{
+            {
+                .location = 0,
+                .binding  = 0,
+                .format   = vk::Format::eR32G32Sfloat,
+                .offset   = offsetof(Vertex, position)
+            },
+            {
+                .location = 1,
+                .binding  = 0,
+                .format   = vk::Format::eR32G32B32Sfloat,
+                .offset   = offsetof(Vertex, colour)
+            }
+        }};
+    }
+};
+
+const std::vector<Vertex> VERTICES = {
+    {{ 0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+    {{ 0.5f,  0.5f}, {0.0f, 1.0f, 0.0f}},
+    {{-0.5f,  0.5f}, {0.0f, 0.0f, 1.0f}}
+};
 
 constexpr uint32_t WIDTH  = 800;
 constexpr uint32_t HEIGHT = 600;
 constexpr std::string SHADER_SPIRV_FILENAME = "../shaders/slang.spv";
 
-const std::vector<char const *> validationLayers = {
+const std::vector<char const *> VALIDATION_LAYERS = {
     "VK_LAYER_KHRONOS_validation"
 };
 
@@ -47,24 +98,26 @@ public:
     }
 
 private:
-    GLFWwindow*                      m_window           = nullptr;
+    GLFWwindow*                      m_window             = nullptr;
     vk::raii::Context                m_context;
-    vk::raii::Instance               m_instance         = nullptr;
-    vk::raii::DebugUtilsMessengerEXT m_debugMessenger   = nullptr;
-    vk::raii::SurfaceKHR             m_surface          = nullptr;
-    vk::raii::PhysicalDevice         m_physicalDevice   = nullptr;
-    vk::raii::Device                 m_device           = nullptr;
-    vk::raii::Queue                  m_queue            = nullptr;
-    vk::raii::SwapchainKHR           m_swapChain        = nullptr;
+    vk::raii::Instance               m_instance           = nullptr;
+    vk::raii::DebugUtilsMessengerEXT m_debugMessenger     = nullptr;
+    vk::raii::SurfaceKHR             m_surface            = nullptr;
+    vk::raii::PhysicalDevice         m_physicalDevice     = nullptr;
+    vk::raii::Device                 m_device             = nullptr;
+    vk::raii::Queue                  m_queue              = nullptr;
+    vk::raii::SwapchainKHR           m_swapChain          = nullptr;
     std::vector<vk::Image>           m_swapChainImages;
     std::vector<vk::raii::ImageView> m_swapChainImageViews;
     vk::SurfaceFormatKHR             m_swapChainSurfaceFormat;
     vk::Extent2D                     m_swapChainExtent;
-    vk::raii::PipelineLayout         m_pipelineLayout   = nullptr;
-    vk::raii::Pipeline               m_graphicsPipeline = nullptr;
-    uint32_t                         m_queueIndex       = ~0;
-    vk::raii::CommandPool            m_commandPool      = nullptr;
-    vk::raii::CommandBuffer          m_commandBuffer    = nullptr;
+    vk::raii::PipelineLayout         m_pipelineLayout     = nullptr;
+    vk::raii::Pipeline               m_graphicsPipeline   = nullptr;
+    uint32_t                         m_queueIndex         = ~0;
+    vk::raii::CommandPool            m_commandPool        = nullptr;
+    vk::raii::CommandBuffer          m_commandBuffer      = nullptr;
+    vk::raii::Buffer                 m_vertexBuffer       = nullptr;
+    vk::raii::DeviceMemory           m_vertexBufferMemory = nullptr;
 
     // Synchronisation primitives.
     vk::raii::Semaphore m_presentCompleteSemaphore = nullptr;
@@ -101,6 +154,7 @@ private:
         createImageViews();
         createGraphicsPipeline();
         createCommandPool();
+        createVertexBuffer();
         createCommandBuffer();
         createSyncObjects();
     }
@@ -142,7 +196,7 @@ private:
         std::vector<char const *> requiredLayers;
         if (enableValidationLayers)
         {
-            requiredLayers.assign(validationLayers.begin(), validationLayers.end());
+            requiredLayers.assign(VALIDATION_LAYERS.begin(), VALIDATION_LAYERS.end());
         }
 
         // Check if the required layers are supported by the Vulkan implementation.
@@ -520,7 +574,14 @@ private:
 
         // Below is fixed-function state.
 
-        vk::PipelineVertexInputStateCreateInfo vertexInputInfo;
+        auto bindingDescription = Vertex::getBindingDescription();
+        auto attributeDescriptions = Vertex::getAttributeDescriptions();
+        vk::PipelineVertexInputStateCreateInfo vertexInputInfo{
+            .vertexBindingDescriptionCount   = 1,
+            .pVertexBindingDescriptions      = &bindingDescription,
+            .vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size()),
+            .pVertexAttributeDescriptions    = attributeDescriptions.data(),
+        };
 
         // Lists of input vertices will represent triangles.
         vk::PipelineInputAssemblyStateCreateInfo inputAssembly{
@@ -749,8 +810,10 @@ private:
             )
         );
 
+        m_commandBuffer.bindVertexBuffers(0, *m_vertexBuffer, {0});
+
         m_commandBuffer.draw(
-            3, // vertexCount
+            static_cast<uint32_t>(VERTICES.size()), // vertexCount
             1, // instanceCount (1 is specified because instanced rendering is not used here)
             0, // firstVertex (offset into the vertex buffer for the lowest value of SV_VertexId)
             0  // firstInstance (used as an offset for instanced rendering, defines the lowest SV_VertexId)
@@ -838,6 +901,7 @@ private:
 
     void drawFrame()
     {
+        // Fences allow the ability to reorder load and store operations.
         auto fenceResult = m_device.waitForFences(*m_drawFence, vk::True, UINT64_MAX);
         if (fenceResult != vk::Result::eSuccess)
         {
@@ -884,6 +948,103 @@ private:
                 std::cout << "Unexpected result" << std::endl;
                 break;        // an unexpected result is returned!
         }
+    }
+
+
+    void createVertexBuffer()
+    {
+        vk::DeviceSize bufferSize = sizeof(VERTICES[0]) * VERTICES.size();
+
+        auto [stagingBuffer, stagingBufferMemory] = createBuffer(
+            bufferSize,
+            vk::BufferUsageFlagBits::eTransferSrc,
+            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent
+        );
+
+        // Keep in mind that while the driver will know we have written this data to the buffer,
+        // the GPU will not know until we call vk::raii::Queue::submit().
+        void* dataStaging = stagingBufferMemory.mapMemory(0, bufferSize);
+        memcpy(dataStaging, VERTICES.data(), bufferSize);
+        stagingBufferMemory.unmapMemory();
+
+        std::tie(m_vertexBuffer, m_vertexBufferMemory) = createBuffer(
+            bufferSize,
+            vk::BufferUsageFlagBits::eVertexBuffer | vk::BufferUsageFlagBits::eTransferDst,
+            vk::MemoryPropertyFlagBits::eDeviceLocal
+        );
+
+        copyBuffer(stagingBuffer, m_vertexBuffer, bufferSize);
+    }
+
+
+    /**
+     *
+     * @param typeFilter Used to specify the bit field of memory types that are suitable.
+     *      This means that we can find the index of a suitable memory type by simply
+     *      iterating over them and checking if the corresponding bit is set to 1.
+     * @param properties
+     * @return
+     */
+    uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties)
+    {
+        vk::PhysicalDeviceMemoryProperties memoryProperties = m_physicalDevice.getMemoryProperties();
+
+        for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; i++)
+        {
+            if ((typeFilter & (1 << i)) && (memoryProperties.memoryTypes[i].propertyFlags & properties) == properties)
+            {
+                return i;
+            }
+        }
+
+        throw std::runtime_error("failed to find suitable memory type!");
+    }
+
+
+    std::pair<vk::raii::Buffer, vk::raii::DeviceMemory> createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::MemoryPropertyFlags properties)
+    {
+        vk::BufferCreateInfo bufferInfo{
+            .size = size,
+            .usage = usage,
+            .sharingMode = vk::SharingMode::eExclusive,
+        };
+        vk::raii::Buffer buffer = vk::raii::Buffer(m_device, bufferInfo);
+        vk::MemoryRequirements memoryRequirements = buffer.getMemoryRequirements();
+        vk::MemoryAllocateInfo allocInfo{
+            .allocationSize = memoryRequirements.size,
+            .memoryTypeIndex = findMemoryType(memoryRequirements.memoryTypeBits, properties),
+        };
+        vk::raii::DeviceMemory bufferMemory = vk::raii::DeviceMemory(m_device, allocInfo);
+        buffer.bindMemory(*bufferMemory, 0);
+        // vk::raii handles can't be copied (because they're dropped when out of scope) so they have
+        // to be moved out of the local scope.
+        return {std::move(buffer), std::move(bufferMemory)};
+    }
+
+
+    void copyBuffer(vk::raii::Buffer & srcBuffer, vk::raii::Buffer & dstBuffer, vk::DeviceSize size)
+    {
+        vk::CommandBufferAllocateInfo allocInfo{
+            .commandPool = m_commandPool,
+            .level = vk::CommandBufferLevel::ePrimary,
+            .commandBufferCount = 1,
+        };
+        vk::raii::CommandBuffer commandCopyBuffer = std::move(m_device.allocateCommandBuffers(allocInfo).front());
+        // Good practice to indicate that we're only going to use the command buffer once.
+        commandCopyBuffer.begin({
+            .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
+        });
+        commandCopyBuffer.copyBuffer(*srcBuffer, *dstBuffer, vk::BufferCopy(0, 0, size));
+        commandCopyBuffer.end();
+
+        m_queue.submit(
+            vk::SubmitInfo{
+                .commandBufferCount = 1,
+                .pCommandBuffers = &*commandCopyBuffer,
+            },
+            nullptr
+        );
+        m_queue.waitIdle();
     }
 };
 

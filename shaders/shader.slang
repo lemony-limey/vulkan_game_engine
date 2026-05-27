@@ -1,36 +1,32 @@
-static float2 positions[3] = float2[](
-    float2(0.0, -0.5),
-    float2(0.5, 0.5),
-    float2(-0.5, 0.5)
-);
+struct VertexShaderInput
+{
+    float2 in_position;
+    float3 in_colour;
+};
 
-static float3 colours[3] = float3[](
-    float3(1.0, 0.0, 0.0),
-    float3(0.0, 1.0, 0.0),
-    float3(0.0, 0.0, 1.0)
-);
-
+// SV_position refers to screen space coordinates.
 struct VertexShaderOutput
 {
-    float3 colour;
     float4 sv_position : SV_Position;
+    float3 colour;
 };
 
 // vid = vertex_id
+
 [shader("vertex")]
-VertexShaderOutput vertMain(uint vid : SV_VertexID)
+VertexShaderOutput vertMain(VertexShaderInput input)
 {
     VertexShaderOutput output;
-    output.sv_position = float4(positions[vid], 0.0, 1.0);
-    output.colour = colours[vid];
+    output.sv_position = float4(input.in_position, 0.0, 1.0);
+    output.colour = input.in_colour;
     return output;
 }
 
 // inVert = input vertex
+
 [shader("fragment")]
-float4 fragMain(VertexShaderOutput inVert) : SV_Target
+float4 fragMain(VertexShaderOutput in_vert) : SV_Target
 {
-    float3 colour = inVert.colour;
     // Add the alpha value of 1.0 to set colour to opaque.
-    return float4(colour, 1.0);
+    return float4(in_vert.colour, 1.0);
 }
