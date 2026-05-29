@@ -67,14 +67,22 @@ struct Vertex
 };
 
 const std::vector<Vertex> VERTICES = {
-    {{ 0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-    {{ 0.5f,  0.5f}, {0.0f, 1.0f, 0.0f}},
-    {{-0.5f,  0.5f}, {0.0f, 0.0f, 1.0f}}
+    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+    {{ 0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
+    {{ 0.5f,  0.5f}, {0.0f, 0.0f, 1.0f}},
+    {{-0.5f,  0.5f}, {1.0f, 1.0f, 1.0f}}
 };
 
-constexpr uint32_t WIDTH  = 800;
-constexpr uint32_t HEIGHT = 600;
+// You can use u16 or u32
+const std::vector<uint16_t> INDICES = {
+    0, 1, 2,
+    2, 3, 0,
+};
+
+constexpr uint32_t    WIDTH  = 800;
+constexpr uint32_t    HEIGHT = 600;
 constexpr std::string SHADER_SPIRV_FILENAME = "../shaders/slang.spv";
+constexpr int         MAX_FRAMES_IN_FLIGHT = 2;
 
 const std::vector<char const *> VALIDATION_LAYERS = {
     "VK_LAYER_KHRONOS_validation"
@@ -98,31 +106,34 @@ public:
     }
 
 private:
-    GLFWwindow*                      m_window             = nullptr;
-    vk::raii::Context                m_context;
-    vk::raii::Instance               m_instance           = nullptr;
-    vk::raii::DebugUtilsMessengerEXT m_debugMessenger     = nullptr;
-    vk::raii::SurfaceKHR             m_surface            = nullptr;
-    vk::raii::PhysicalDevice         m_physicalDevice     = nullptr;
-    vk::raii::Device                 m_device             = nullptr;
-    vk::raii::Queue                  m_queue              = nullptr;
-    vk::raii::SwapchainKHR           m_swapChain          = nullptr;
-    std::vector<vk::Image>           m_swapChainImages;
-    std::vector<vk::raii::ImageView> m_swapChainImageViews;
-    vk::SurfaceFormatKHR             m_swapChainSurfaceFormat;
-    vk::Extent2D                     m_swapChainExtent;
-    vk::raii::PipelineLayout         m_pipelineLayout     = nullptr;
-    vk::raii::Pipeline               m_graphicsPipeline   = nullptr;
-    uint32_t                         m_queueIndex         = ~0;
-    vk::raii::CommandPool            m_commandPool        = nullptr;
-    vk::raii::CommandBuffer          m_commandBuffer      = nullptr;
-    vk::raii::Buffer                 m_vertexBuffer       = nullptr;
-    vk::raii::DeviceMemory           m_vertexBufferMemory = nullptr;
+    GLFWwindow*                          m_window             = nullptr;
+    vk::raii::Context                    m_context;
+    vk::raii::Instance                   m_instance           = nullptr;
+    vk::raii::DebugUtilsMessengerEXT     m_debugMessenger     = nullptr;
+    vk::raii::SurfaceKHR                 m_surface            = nullptr;
+    vk::raii::PhysicalDevice             m_physicalDevice     = nullptr;
+    vk::raii::Device                     m_device             = nullptr;
+    vk::raii::Queue                      m_queue              = nullptr;
+    vk::raii::SwapchainKHR               m_swapChain          = nullptr;
+    std::vector<vk::Image>               m_swapChainImages;
+    std::vector<vk::raii::ImageView>     m_swapChainImageViews;
+    vk::SurfaceFormatKHR                 m_swapChainSurfaceFormat;
+    vk::Extent2D                         m_swapChainExtent;
+    vk::raii::PipelineLayout             m_pipelineLayout     = nullptr;
+    vk::raii::Pipeline                   m_graphicsPipeline   = nullptr;
+    uint32_t                             m_queueIndex         = ~0;
+    vk::raii::CommandPool                m_commandPool        = nullptr;
+    std::vector<vk::raii::CommandBuffer> m_commandBuffers;
+    vk::raii::Buffer                     m_vertexBuffer       = nullptr;
+    vk::raii::DeviceMemory               m_vertexBufferMemory = nullptr;
+    vk::raii::Buffer                     m_indexBuffer        = nullptr;
+    vk::raii::DeviceMemory               m_indexBufferMemory  = nullptr;
 
     // Synchronisation primitives.
     vk::raii::Semaphore m_presentCompleteSemaphore = nullptr;
     vk::raii::Semaphore m_renderFinishedSemaphore  = nullptr;
     vk::raii::Fence     m_drawFence                = nullptr;
+    uint32_t            m_frameIndex                 = 0;
 
     // Required device extensions.
     std::vector<const char *> m_requiredDeviceExtension = {
@@ -155,7 +166,8 @@ private:
         createGraphicsPipeline();
         createCommandPool();
         createVertexBuffer();
-        createCommandBuffer();
+        createIndexBuffer();
+        createCommandBuffers();
         createSyncObjects();
     }
 
@@ -729,8 +741,10 @@ private:
     }
 
 
-    void createCommandBuffer()
+    void createCommandBuffers()
     {
+        m_commandBuffers.clear();
+
         vk::CommandBufferAllocateInfo allocInfo{
             .commandPool = m_commandPool,
             // Primary means the buffer can be submitted to a queue for execution,
@@ -738,16 +752,17 @@ private:
             // Secondary buffers cannot be submitted to a queue directly, but can
             // be called from primary command buffers.
             .level = vk::CommandBufferLevel::ePrimary,
-            .commandBufferCount = 1,
+            .commandBufferCount = MAX_FRAMES_IN_FLIGHT,
         };
 
-        m_commandBuffer = std::move(vk::raii::CommandBuffers(m_device, allocInfo).front());
+        m_commandBuffers = vk::raii::CommandBuffers(m_device, allocInfo);
     }
 
 
     void recordCommandBuffer(uint32_t imageIndex)
     {
-        m_commandBuffer.begin({});
+        auto &commandBuffer = m_commandBuffers[m_frameIndex];
+        commandBuffer.begin({});
 
         // Transition the image layout for rendering.
         transitionImageLayout(
@@ -784,14 +799,14 @@ private:
         };
 
         // Begin rendering.
-        m_commandBuffer.beginRendering(renderingInfo);
+        commandBuffer.beginRendering(renderingInfo);
 
         // Rendering commands go here.
         // Bind to the pipeline.
-        m_commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *m_graphicsPipeline);
+        commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, *m_graphicsPipeline);
         // We previously set the viewport and scissor state for this pipeline to be dynamic,
         // so we need to set them in the command buffer before issuing our draw command.
-        m_commandBuffer.setViewport(
+        commandBuffer.setViewport(
             0,
             vk::Viewport(
                 0.0f,
@@ -802,7 +817,7 @@ private:
                 1.0f
             )
         );
-        m_commandBuffer.setScissor(
+        commandBuffer.setScissor(
             0,
             vk::Rect2D(
                 vk::Offset2D(0, 0),
@@ -810,18 +825,21 @@ private:
             )
         );
 
-        m_commandBuffer.bindVertexBuffers(0, *m_vertexBuffer, {0});
+        commandBuffer.bindVertexBuffers(0, *m_vertexBuffer, {0});
+        // Could also use u32 if we needed more vertices, but we don't at the moment.
+        commandBuffer.bindIndexBuffer(*m_indexBuffer, 0, vk::IndexType::eUint16);
 
-        m_commandBuffer.draw(
-            static_cast<uint32_t>(VERTICES.size()), // vertexCount
+        commandBuffer.drawIndexed(
+            static_cast<uint32_t>(INDICES.size()), // indexCount
             1, // instanceCount (1 is specified because instanced rendering is not used here)
-            0, // firstVertex (offset into the vertex buffer for the lowest value of SV_VertexId)
+            0, // firstIndex (offset into the index buffer for the lowest value of SV_VertexId)
+            0, // vertexOffset (offset to add to the vertex index before indexing into the vertex buffer)
             0  // firstInstance (used as an offset for instanced rendering, defines the lowest SV_VertexId)
         );
 
 
         // End rendering.
-        m_commandBuffer.endRendering();
+        commandBuffer.endRendering();
 
         // Transition the swapchain image to vk::ImageLayout::ePresentSrcKHR
         // for presentation.
@@ -836,7 +854,7 @@ private:
         );
 
         // We've finished recording the command buffer.
-        m_commandBuffer.end();
+        commandBuffer.end();
     }
 
 
@@ -884,7 +902,7 @@ private:
             .pImageMemoryBarriers = &barrier,
         };
 
-        m_commandBuffer.pipelineBarrier2(dependencyInfo);
+        m_commandBuffers[m_frameIndex].pipelineBarrier2(dependencyInfo);
     }
 
 
@@ -899,6 +917,9 @@ private:
     }
 
 
+    // Note that inFlightFences, presentCompleteSemaphores and m_commandBuffers are indexed by frameIndex,
+    // whereas renderFinishedSemaphores is indexed by image index.
+    // TODO: Update this comment when variables are renamed.
     void drawFrame()
     {
         // Fences allow the ability to reorder load and store operations.
@@ -911,6 +932,7 @@ private:
 
         auto [result, imageIndex] = m_swapChain.acquireNextImage(UINT64_MAX, *m_presentCompleteSemaphore, nullptr);
 
+        m_commandBuffers[m_frameIndex].reset();
         recordCommandBuffer(imageIndex);
 
         m_queue.waitIdle();
@@ -920,7 +942,7 @@ private:
             .pWaitSemaphores = &*m_presentCompleteSemaphore,
             .pWaitDstStageMask = &waitDestinationStageMask,
             .commandBufferCount = 1,
-            .pCommandBuffers = &*m_commandBuffer,
+            .pCommandBuffers = &*m_commandBuffers[m_frameIndex],
             .signalSemaphoreCount = 1,
             .pSignalSemaphores = &*m_renderFinishedSemaphore,
         };
@@ -948,6 +970,8 @@ private:
                 std::cout << "Unexpected result" << std::endl;
                 break;        // an unexpected result is returned!
         }
+
+        m_frameIndex = (m_frameIndex + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 
 
@@ -974,6 +998,32 @@ private:
         );
 
         copyBuffer(stagingBuffer, m_vertexBuffer, bufferSize);
+    }
+
+
+    void createIndexBuffer()
+    {
+        vk::DeviceSize bufferSize = sizeof(INDICES[0]) * INDICES.size();
+
+        auto [stagingBuffer, stagingBufferMemory] = createBuffer(
+            bufferSize,
+            vk::BufferUsageFlagBits::eTransferSrc,
+            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent
+        );
+
+        // Keep in mind that while the driver will know we have written this data to the buffer,
+        // the GPU will not know until we call vk::raii::Queue::submit().
+        void* dataStaging = stagingBufferMemory.mapMemory(0, bufferSize);
+        memcpy(dataStaging, INDICES.data(), bufferSize);
+        stagingBufferMemory.unmapMemory();
+
+        std::tie(m_indexBuffer, m_indexBufferMemory) = createBuffer(
+            bufferSize,
+            vk::BufferUsageFlagBits::eIndexBuffer | vk::BufferUsageFlagBits::eTransferDst,
+            vk::MemoryPropertyFlagBits::eDeviceLocal
+        );
+
+        copyBuffer(stagingBuffer, m_indexBuffer, bufferSize);
     }
 
 
@@ -1022,7 +1072,7 @@ private:
     }
 
 
-    void copyBuffer(vk::raii::Buffer & srcBuffer, vk::raii::Buffer & dstBuffer, vk::DeviceSize size)
+    void copyBuffer(vk::raii::Buffer & srcBuffer, vk::raii::Buffer & dstBuffer, vk::DeviceSize size) const
     {
         vk::CommandBufferAllocateInfo allocInfo{
             .commandPool = m_commandPool,
@@ -1034,6 +1084,7 @@ private:
         commandCopyBuffer.begin({
             .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
         });
+        // Copy everything from the source buffer from position 0 onwards to the end, to the destination buffer.
         commandCopyBuffer.copyBuffer(*srcBuffer, *dstBuffer, vk::BufferCopy(0, 0, size));
         commandCopyBuffer.end();
 
