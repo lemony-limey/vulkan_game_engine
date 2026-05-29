@@ -142,6 +142,8 @@ private:
     std::vector<vk::raii::Buffer>        m_uniformBuffers;
     std::vector<vk::raii::DeviceMemory>  m_uniformBuffersMemory;
     std::vector<void*>                   m_uniformBuffersMapped;
+    vk::raii::DescriptorPool             m_descriptorPool      = nullptr;
+    std::vector<vk::raii::DescriptorSet> m_descriptorSets;
 
     // Synchronisation primitives.
     std::vector<vk::raii::Semaphore> m_presentCompleteSemaphores;
@@ -194,6 +196,8 @@ private:
         createVertexBuffer();
         createIndexBuffer();
         createUniformBuffers();
+        createDescriptorPool();
+        createDescriptorSets();
         createCommandBuffers();
         createSyncObjects();
     }
@@ -618,12 +622,14 @@ private:
 
     void createDescriptorSetLayout()
     {
+        // Every binding needs to be described through a vk::DescriptorSetLayoutBinding struct.
         vk::DescriptorSetLayoutBinding uboLayoutBinding{
             .binding = 0,
             .descriptorType = vk::DescriptorType::eUniformBuffer,
-            .descriptorCount = 1,
+            .descriptorCount = 1,  // Number of values in the array. We only have 1 UBO.
             .stageFlags = vk::ShaderStageFlagBits::eVertex,
         };
+
         vk::DescriptorSetLayoutCreateInfo layoutInfo{
             .bindingCount = 1,
             .pBindings = &uboLayoutBinding,
@@ -689,7 +695,7 @@ private:
             .rasterizerDiscardEnable = vk::False,
             .polygonMode = vk::PolygonMode::eFill,
             .cullMode = vk::CullModeFlagBits::eBack,
-            .frontFace = vk::FrontFace::eClockwise,
+            .frontFace = vk::FrontFace::eCounterClockwise,
             .depthBiasEnable = vk::False,
             // line thickness in fragments (pixels).
             .lineWidth = 1.0f,
@@ -897,6 +903,16 @@ private:
         commandBuffer.bindVertexBuffers(0, *m_vertexBuffer, {0});
         // Could also use u32 if we needed more vertices, but we don't at the moment.
         commandBuffer.bindIndexBuffer(*m_indexBuffer, 0, vk::IndexType::eUint16);
+
+        // Descriptor sets are not unique to graphics pipelines, so we need to specify whether we
+        // want to bind them to the graphics or compute pipeline.
+        m_commandBuffers[m_frameIndex].bindDescriptorSets(
+            vk::PipelineBindPoint::eGraphics,
+            m_pipelineLayout,
+            0,
+            *m_descriptorSets[m_frameIndex],
+            nullptr  // Specifies an array of offsets used for dynamic descriptors.
+        );
 
         commandBuffer.drawIndexed(
             static_cast<uint32_t>(INDICES.size()), // indexCount
@@ -1111,9 +1127,10 @@ private:
             0.1f,
             10.0f
         );
+        // Need to compensate for the inverted Y coordinates from OpenGL, since GLM was designed for OpenGL.
+        ubo.projection[1][1] *= -1;
 
-        ubo.projection[1][1] += -1;
-
+        // Push constants are a more efficient way to frequently pass changing values to a shader.
         memcpy(m_uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
     }
 
@@ -1182,7 +1199,69 @@ private:
             );
             m_uniformBuffers.emplace_back(std::move(buffer));
             m_uniformBuffersMemory.emplace_back(std::move(bufferMemory));
+            // We retain the pointer from the mapping as it will stay mapped for the application's lifetime.
+            // This is known as "persistent mapping" and avoids the overhead of mapping and freeing every time.
             m_uniformBuffersMapped.emplace_back(m_uniformBuffersMemory.back().mapMemory(0, bufferSize));
+        }
+    }
+
+
+    /**
+     * Descriptor sets can't be created directly, they must be allocated from a pool, just like
+     * command buffers.
+     */
+    void createDescriptorPool()
+    {
+        // Describe which descriptor types our descriptor sets are going to contains and how many
+        // of them there will be.
+        vk::DescriptorPoolSize poolSize{
+            .type = vk::DescriptorType::eUniformBuffer,
+            .descriptorCount = MAX_FRAMES_IN_FLIGHT,
+        };
+        // One descriptor will be allocated for every frame. This pool size structure is referenced
+        // by the main vk::DescriptorPoolCreateInfo struct.
+        vk::DescriptorPoolCreateInfo poolInfo{
+            // This flag is necessary so that the RAII handle is allowed to destroy the
+            // underlying VkDescriptorSet when dropped.
+            .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
+            .maxSets = MAX_FRAMES_IN_FLIGHT,
+            .poolSizeCount = 1,
+            .pPoolSizes = &poolSize,
+        };
+
+        m_descriptorPool = vk::raii::DescriptorPool(m_device, poolInfo);
+    }
+
+
+    void createDescriptorSets()
+    {
+        std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, *m_descriptorSetLayout);
+        vk::DescriptorSetAllocateInfo allocInfo{
+            .descriptorPool = m_descriptorPool,
+            .descriptorSetCount = static_cast<uint32_t>(layouts.size()),
+            .pSetLayouts = layouts.data(),
+        };
+
+        // Allocate the descriptor sets.
+        m_descriptorSets = m_device.allocateDescriptorSets(allocInfo);
+
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        {
+            vk::DescriptorBufferInfo bufferInfo{
+                .buffer = m_uniformBuffers[i],
+                .offset = 0,
+                .range = sizeof(UniformBufferObject),
+            };
+            vk::WriteDescriptorSet descriptorWrite{
+                .dstSet          = m_descriptorSets[i],
+                .dstBinding      = 0,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType  = vk::DescriptorType::eUniformBuffer,
+                .pBufferInfo     = &bufferInfo,
+            };
+
+            m_device.updateDescriptorSets(descriptorWrite, {});
         }
     }
 
