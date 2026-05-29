@@ -11,6 +11,7 @@
 
 // Disabling constructors enables the use of initialiser lists.
 #define VULKAN_HPP_NO_STRUCT_CONSTRUCTORS
+#define VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS
 
 #if defined(__INTELLISENSE__) || !defined(USE_CPP20_MODULES)
 #	include <vulkan/vulkan_raii.hpp>
@@ -130,10 +131,12 @@ private:
     vk::raii::DeviceMemory               m_indexBufferMemory  = nullptr;
 
     // Synchronisation primitives.
-    vk::raii::Semaphore m_presentCompleteSemaphore = nullptr;
-    vk::raii::Semaphore m_renderFinishedSemaphore  = nullptr;
-    vk::raii::Fence     m_drawFence                = nullptr;
-    uint32_t            m_frameIndex                 = 0;
+    std::vector<vk::raii::Semaphore> m_presentCompleteSemaphores;
+    std::vector<vk::raii::Semaphore> m_renderFinishedSemaphores;
+    std::vector<vk::raii::Fence>     m_inFlightFences;
+    uint32_t                         m_frameIndex = 0;
+
+    bool m_framebufferResized = false;
 
     // Required device extensions.
     std::vector<const char *> m_requiredDeviceExtension = {
@@ -151,6 +154,15 @@ private:
         glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 
         m_window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", nullptr, nullptr);
+        glfwSetWindowUserPointer(m_window, this);
+        glfwSetFramebufferSizeCallback(m_window, framebufferResizeCallback);
+    }
+
+
+    static void framebufferResizeCallback(GLFWwindow* window, int width, int height)
+    {
+        auto app = static_cast<HelloTriangleApplication*>(glfwGetWindowUserPointer(window));
+        app->m_framebufferResized = true;
     }
 
 
@@ -186,11 +198,36 @@ private:
     }
 
 
+    void cleanupSwapChain()
+    {
+        m_swapChainImageViews.clear();
+        m_swapChain = nullptr;
+    }
+
+
     void cleanup()
     {
         glfwDestroyWindow(m_window);
 
         glfwTerminate();
+    }
+
+
+    void recreateSwapChain()
+    {
+        int width = 0, height = 0;
+        glfwGetFramebufferSize(m_window, &width, &height);
+        while (width == 0 || height == 0)
+        {
+            glfwGetFramebufferSize(m_window, &width, &height);
+            glfwWaitEvents();
+        }
+
+        m_device.waitIdle();
+
+        cleanupSwapChain();
+        createSwapChain();
+        createImageViews();
     }
 
 
@@ -908,12 +945,25 @@ private:
 
     void createSyncObjects()
     {
-        m_presentCompleteSemaphore = vk::raii::Semaphore(m_device, vk::SemaphoreCreateInfo());
-        m_renderFinishedSemaphore  = vk::raii::Semaphore(m_device, vk::SemaphoreCreateInfo());
-        m_drawFence = vk::raii::Fence(
-            m_device,
-            { .flags = vk::FenceCreateFlagBits::eSignaled }
+        assert(m_presentCompleteSemaphores.empty()
+            && m_renderFinishedSemaphores.empty()
+            && m_inFlightFences.empty()
         );
+
+        for (size_t i = 0; i < m_swapChainImages.size(); i++)
+        {
+            m_renderFinishedSemaphores.emplace_back(m_device, vk::SemaphoreCreateInfo());
+
+        }
+
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        {
+            m_presentCompleteSemaphores.emplace_back(m_device, vk::SemaphoreCreateInfo());
+            m_inFlightFences.emplace_back(
+                m_device,
+                vk::FenceCreateInfo{ .flags = vk::FenceCreateFlagBits::eSignaled }
+            );
+        }
     }
 
 
@@ -923,14 +973,29 @@ private:
     void drawFrame()
     {
         // Fences allow the ability to reorder load and store operations.
-        auto fenceResult = m_device.waitForFences(*m_drawFence, vk::True, UINT64_MAX);
+        auto fenceResult = m_device.waitForFences(*m_inFlightFences[m_frameIndex], vk::True, UINT64_MAX);
         if (fenceResult != vk::Result::eSuccess)
         {
             throw std::runtime_error("failed to wait for fence!");
         }
-        m_device.resetFences(*m_drawFence);
 
-        auto [result, imageIndex] = m_swapChain.acquireNextImage(UINT64_MAX, *m_presentCompleteSemaphore, nullptr);
+        auto [result, imageIndex] = m_swapChain.acquireNextImage(UINT64_MAX, *m_presentCompleteSemaphores[m_frameIndex], nullptr);
+
+        // Due to VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS being defines, eErrorOutOfDateKHR
+        // can be checked as a result.
+        if (result == vk::Result::eErrorOutOfDateKHR)
+        {
+            recreateSwapChain();
+            return;
+        }
+        if (result != vk::Result::eSuccess && result != vk::Result::eSuboptimalKHR)
+        {
+            assert(result == vk::Result::eTimeout || result == vk::Result::eNotReady);
+            throw std::runtime_error("failed to acquire swap chain image!");
+        }
+
+        // Only reset the fence if we are submitting work.
+        m_device.resetFences(*m_inFlightFences[m_frameIndex]);
 
         m_commandBuffers[m_frameIndex].reset();
         recordCommandBuffer(imageIndex);
@@ -939,37 +1004,51 @@ private:
         vk::PipelineStageFlags waitDestinationStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput);
         const vk::SubmitInfo submitInfo{
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &*m_presentCompleteSemaphore,
+            .pWaitSemaphores = &*m_presentCompleteSemaphores[m_frameIndex],
             .pWaitDstStageMask = &waitDestinationStageMask,
             .commandBufferCount = 1,
             .pCommandBuffers = &*m_commandBuffers[m_frameIndex],
             .signalSemaphoreCount = 1,
-            .pSignalSemaphores = &*m_renderFinishedSemaphore,
+            .pSignalSemaphores = &*m_renderFinishedSemaphores[imageIndex],
         };
 
-        m_queue.submit(submitInfo, *m_drawFence);
+        m_queue.submit(submitInfo, *m_inFlightFences[m_frameIndex]);
 
         const vk::PresentInfoKHR presentInfoKHR{
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &*m_renderFinishedSemaphore,
+            .pWaitSemaphores = &*m_renderFinishedSemaphores[imageIndex],
             .swapchainCount = 1,
             .pSwapchains = &*m_swapChain,
             .pImageIndices = &imageIndex
         };
 
         result = m_queue.presentKHR(presentInfoKHR);
-        switch (result)
+
+        // Due to VULKAN_HPP_HANDLE_ERROR_OUT_OF_DATE_AS_SUCCESS being defined, eErrorOutOfDateKHR can be checked as a result
+        // here and does not need to be caught by an exception.
+        if ((result == vk::Result::eSuboptimalKHR) || (result == vk::Result::eErrorOutOfDateKHR) || m_framebufferResized)
         {
-            case vk::Result::eSuccess:
-                // std::cout << "Success" << std::endl;
-                break;
-            case vk::Result::eSuboptimalKHR:
-                std::cout << "vk::Queue::presentKHR returned vk::Result::eSuboptimalKHR !\n";
-                break;
-            default:
-                std::cout << "Unexpected result" << std::endl;
-                break;        // an unexpected result is returned!
+            m_framebufferResized = false;
+            recreateSwapChain();
         }
+        else
+        {
+            // There are no other success codes than eSuccess; on any error code, presentKHR already threw an exception.
+            assert(result == vk::Result::eSuccess);
+        }
+
+        // switch (result)
+        // {
+        //     case vk::Result::eSuccess:
+        //         // std::cout << "Success" << std::endl;
+        //         break;
+        //     case vk::Result::eSuboptimalKHR:
+        //         std::cout << "vk::Queue::presentKHR returned vk::Result::eSuboptimalKHR !\n";
+        //         break;
+        //     default:
+        //         std::cout << "Unexpected result" << std::endl;
+        //         break;        // an unexpected result is returned!
+        // }
 
         m_frameIndex = (m_frameIndex + 1) % MAX_FRAMES_IN_FLIGHT;
     }
