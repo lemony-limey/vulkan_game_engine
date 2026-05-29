@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -22,6 +23,7 @@ import vulkan_hpp;
 #define GLFW_INCLUDE_VULKAN        // REQUIRED only for GLFW CreateWindowSurface.
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 struct Vertex
 {
@@ -67,6 +69,13 @@ struct Vertex
     }
 };
 
+struct UniformBufferObject
+{
+    glm::mat4 model;
+    glm::mat4 view;
+    glm::mat4 projection;
+};
+
 const std::vector<Vertex> VERTICES = {
     {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
     {{ 0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
@@ -107,28 +116,32 @@ public:
     }
 
 private:
-    GLFWwindow*                          m_window             = nullptr;
+    GLFWwindow*                          m_window              = nullptr;
     vk::raii::Context                    m_context;
-    vk::raii::Instance                   m_instance           = nullptr;
-    vk::raii::DebugUtilsMessengerEXT     m_debugMessenger     = nullptr;
-    vk::raii::SurfaceKHR                 m_surface            = nullptr;
-    vk::raii::PhysicalDevice             m_physicalDevice     = nullptr;
-    vk::raii::Device                     m_device             = nullptr;
-    vk::raii::Queue                      m_queue              = nullptr;
-    vk::raii::SwapchainKHR               m_swapChain          = nullptr;
+    vk::raii::Instance                   m_instance            = nullptr;
+    vk::raii::DebugUtilsMessengerEXT     m_debugMessenger      = nullptr;
+    vk::raii::SurfaceKHR                 m_surface             = nullptr;
+    vk::raii::PhysicalDevice             m_physicalDevice      = nullptr;
+    vk::raii::Device                     m_device              = nullptr;
+    vk::raii::Queue                      m_queue               = nullptr;
+    vk::raii::SwapchainKHR               m_swapChain           = nullptr;
     std::vector<vk::Image>               m_swapChainImages;
     std::vector<vk::raii::ImageView>     m_swapChainImageViews;
     vk::SurfaceFormatKHR                 m_swapChainSurfaceFormat;
     vk::Extent2D                         m_swapChainExtent;
-    vk::raii::PipelineLayout             m_pipelineLayout     = nullptr;
-    vk::raii::Pipeline                   m_graphicsPipeline   = nullptr;
-    uint32_t                             m_queueIndex         = ~0;
-    vk::raii::CommandPool                m_commandPool        = nullptr;
+    vk::raii::DescriptorSetLayout        m_descriptorSetLayout = nullptr;
+    vk::raii::PipelineLayout             m_pipelineLayout      = nullptr;
+    vk::raii::Pipeline                   m_graphicsPipeline    = nullptr;
+    uint32_t                             m_queueIndex          = ~0;
+    vk::raii::CommandPool                m_commandPool         = nullptr;
     std::vector<vk::raii::CommandBuffer> m_commandBuffers;
-    vk::raii::Buffer                     m_vertexBuffer       = nullptr;
-    vk::raii::DeviceMemory               m_vertexBufferMemory = nullptr;
-    vk::raii::Buffer                     m_indexBuffer        = nullptr;
-    vk::raii::DeviceMemory               m_indexBufferMemory  = nullptr;
+    vk::raii::Buffer                     m_vertexBuffer        = nullptr;
+    vk::raii::DeviceMemory               m_vertexBufferMemory  = nullptr;
+    vk::raii::Buffer                     m_indexBuffer         = nullptr;
+    vk::raii::DeviceMemory               m_indexBufferMemory   = nullptr;
+    std::vector<vk::raii::Buffer>        m_uniformBuffers;
+    std::vector<vk::raii::DeviceMemory>  m_uniformBuffersMemory;
+    std::vector<void*>                   m_uniformBuffersMapped;
 
     // Synchronisation primitives.
     std::vector<vk::raii::Semaphore> m_presentCompleteSemaphores;
@@ -175,10 +188,12 @@ private:
         createLogicalDevice();
         createSwapChain();
         createImageViews();
+        createDescriptorSetLayout();
         createGraphicsPipeline();
         createCommandPool();
         createVertexBuffer();
         createIndexBuffer();
+        createUniformBuffers();
         createCommandBuffers();
         createSyncObjects();
     }
@@ -601,6 +616,22 @@ private:
     }
 
 
+    void createDescriptorSetLayout()
+    {
+        vk::DescriptorSetLayoutBinding uboLayoutBinding{
+            .binding = 0,
+            .descriptorType = vk::DescriptorType::eUniformBuffer,
+            .descriptorCount = 1,
+            .stageFlags = vk::ShaderStageFlagBits::eVertex,
+        };
+        vk::DescriptorSetLayoutCreateInfo layoutInfo{
+            .bindingCount = 1,
+            .pBindings = &uboLayoutBinding,
+        };
+        m_descriptorSetLayout = vk::raii::DescriptorSetLayout(m_device, layoutInfo);
+    }
+
+
     void createGraphicsPipeline()
     {
         // Below is state for the shader stages.
@@ -691,7 +722,8 @@ private:
 
         // Create the pipeline layout.
         vk::PipelineLayoutCreateInfo pipelineLayoutInfo{
-            .setLayoutCount         = 0,
+            .setLayoutCount         = 1,
+            .pSetLayouts            = &*m_descriptorSetLayout,
             .pushConstantRangeCount = 0,
         };
         m_pipelineLayout = vk::raii::PipelineLayout(m_device, pipelineLayoutInfo);
@@ -993,6 +1025,7 @@ private:
             assert(result == vk::Result::eTimeout || result == vk::Result::eNotReady);
             throw std::runtime_error("failed to acquire swap chain image!");
         }
+        updateUniformBuffer(m_frameIndex);
 
         // Only reset the fence if we are submitting work.
         m_device.resetFences(*m_inFlightFences[m_frameIndex]);
@@ -1054,6 +1087,37 @@ private:
     }
 
 
+    void updateUniformBuffer(uint32_t currentImage)
+    {
+        static auto startTime = std::chrono::high_resolution_clock::now();
+
+        auto currentTime = std::chrono::high_resolution_clock::now();
+        float time = std::chrono::duration<float, std::chrono::seconds::period>(currentTime - startTime).count();
+
+        UniformBufferObject ubo{};
+        ubo.model = rotate(
+            glm::mat4(1.0f),
+            time * glm::radians(90.0f),
+            glm::vec3(0.0f, 0.0f, 1.0f)
+        );
+        ubo.view = lookAt(
+            glm::vec3(2.0f, 2.0f, 2.0f),
+            glm::vec3(0.0f, 0.0f, 0.0f),
+            glm::vec3(0.0f, 0.0f, 1.0f)
+        );
+        ubo.projection = glm::perspective(
+            glm::radians(45.0f),
+            static_cast<float>(m_swapChainExtent.width) / static_cast<float>(m_swapChainExtent.height),
+            0.1f,
+            10.0f
+        );
+
+        ubo.projection[1][1] += -1;
+
+        memcpy(m_uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
+    }
+
+
     void createVertexBuffer()
     {
         vk::DeviceSize bufferSize = sizeof(VERTICES[0]) * VERTICES.size();
@@ -1103,6 +1167,23 @@ private:
         );
 
         copyBuffer(stagingBuffer, m_indexBuffer, bufferSize);
+    }
+
+
+    void createUniformBuffers()
+    {
+        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        {
+            vk::DeviceSize bufferSize = sizeof(UniformBufferObject);
+            auto [buffer, bufferMemory] = createBuffer(
+                bufferSize,
+                vk::BufferUsageFlagBits::eUniformBuffer,
+                vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent
+            );
+            m_uniformBuffers.emplace_back(std::move(buffer));
+            m_uniformBuffersMemory.emplace_back(std::move(bufferMemory));
+            m_uniformBuffersMapped.emplace_back(m_uniformBuffersMemory.back().mapMemory(0, bufferSize));
+        }
     }
 
 
