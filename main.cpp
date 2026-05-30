@@ -20,6 +20,9 @@
 import vulkan_hpp;
 #endif
 
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
+
 #define GLFW_INCLUDE_VULKAN        // REQUIRED only for GLFW CreateWindowSurface.
 #define GLM_FORCE_DEFAULT_ALIGNED_GENTYPES
 #include <GLFW/glfw3.h>
@@ -194,6 +197,7 @@ private:
         createDescriptorSetLayout();
         createGraphicsPipeline();
         createCommandPool();
+        createTextureImage();
         createVertexBuffer();
         createIndexBuffer();
         createUniformBuffers();
@@ -1133,6 +1137,20 @@ private:
 
         // Push constants are a more efficient way to frequently pass changing values to a shader.
         memcpy(m_uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
+    }
+
+
+    void createTextureImage()
+    {
+        int textureWidth, textureHeight, textureChannels;
+        // TODO: Get library
+        // stbi_uc* pixels = stbi_load("image path", &textureWidth, &textureHeight, &textureChannels, STBI_rgb_alpha);
+        vk::DeviceSize imageSize = textureWidth * textureHeight * 4;
+
+        if (!pixels)
+        {
+            throw std::runtime_error("failed to load texture image!");
+        }
     }
 
 
