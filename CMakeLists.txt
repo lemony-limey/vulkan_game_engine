@@ -3,7 +3,10 @@ project(hello_triangle_vulkan)
 
 set(CMAKE_CXX_STANDARD 23)
 
-add_executable(hello_triangle_vulkan main.cpp)
+add_executable(hello_triangle_vulkan
+        main.cpp
+        stb_image.h
+)
 
 # Find Vulkan
 find_package(Vulkan REQUIRED glslc)
