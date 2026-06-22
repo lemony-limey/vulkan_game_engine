@@ -150,6 +150,7 @@ private:
     std::vector<vk::raii::DescriptorSet> m_descriptorSets;
     vk::raii::Image                      m_textureImage        = nullptr;
     vk::raii::DeviceMemory               m_textureImageMemory  = nullptr;
+    vk::raii::ImageView                  m_textureImageView    = nullptr;
 
     // Synchronisation primitives.
     std::vector<vk::raii::Semaphore> m_presentCompleteSemaphores;
@@ -200,6 +201,8 @@ private:
         createGraphicsPipeline();
         createCommandPool();
         createTextureImage();
+        createTextureImageView();
+        createTextureSampler();
         createVertexBuffer();
         createIndexBuffer();
         createUniformBuffers();
@@ -606,24 +609,6 @@ private:
 
         m_swapChain = vk::raii::SwapchainKHR(m_device, swapChainCreateInfo);
         m_swapChainImages = m_swapChain.getImages();
-    }
-
-
-    void createImageViews()
-    {
-        assert(m_swapChainImageViews.empty());
-
-        vk::ImageViewCreateInfo imageViewCreateInfo{
-            .viewType = vk::ImageViewType::e2D,
-            .format = m_swapChainSurfaceFormat.format,
-            .subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 }
-        };
-
-        for (auto &image : m_swapChainImages)
-        {
-            imageViewCreateInfo.image = image;
-            m_swapChainImageViews.emplace_back(m_device, imageViewCreateInfo);
-        }
     }
 
 
@@ -1237,6 +1222,54 @@ private:
         return {
             std::move(image),
             std::move(imageMemory)
+        };
+    }
+
+
+    vk::raii::ImageView createImageView(vk::Image const & image, vk::Format format)
+    {
+        vk::ImageViewCreateInfo imageViewCreateInfo{
+            .image = image,
+            .viewType = vk::ImageViewType::e2D,
+            .format = format,
+            .subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 }
+        };
+        return vk::raii::ImageView(m_device, imageViewCreateInfo);
+    }
+
+
+    void createImageViews()
+    {
+        assert(m_swapChainImageViews.empty());
+
+        m_swapChainImageViews.reserve(m_swapChainImages.size());
+        for (auto & image : m_swapChainImages)
+        {
+            m_swapChainImageViews.emplace_back(createImageView(image, m_swapChainSurfaceFormat.format));
+        }
+    }
+
+
+    void createTextureImageView()
+    {
+        m_textureImageView = createImageView(*m_textureImage, vk::Format::eR8G8B8A8Srgb);
+    }
+
+
+    void createTextureSampler()
+    {
+        vk::PhysicalDeviceProperties properties = m_physicalDevice.getProperties();
+        vk::SamplerCreateInfo samplerInfo{
+            .magFilter = vk::Filter::eLinear,
+            .minFilter = vk::Filter::eLinear,
+            .mipmapMode = vk::SamplerMipmapMode::eLinear,
+            .addressModeU = vk::SamplerAddressMode::eRepeat,
+            .addressModeV = vk::SamplerAddressMode::eRepeat,
+            .addressModeW = vk::SamplerAddressMode::eRepeat,
+            .anisotropyEnable = vk::True,
+            .maxAnisotropy = properties.limits.maxSamplerAnisotropy,
+            .compareEnable = vk::False,
+            .compareOp = vk::CompareOp::eAlways,
         };
     }
 
