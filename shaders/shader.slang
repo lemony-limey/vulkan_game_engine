@@ -2,6 +2,7 @@ struct VSInput
 {
     float2 in_position;
     float3 in_colour;
+    float2 in_texture_coordinates;
 };
 
 struct UniformBuffer
@@ -16,7 +17,8 @@ ConstantBuffer<UniformBuffer> ubo;
 struct VSOutput
 {
     float4 sv_position : SV_Position;
-    float3 colour;
+    float3 fragment_colour;
+    float2 fragment_texture_coordinates;
 };
 
 // vid = vertex_id
@@ -26,15 +28,17 @@ VSOutput vertMain(VSInput input)
 {
     VSOutput output;
     output.sv_position = mul(ubo.projection, mul(ubo.view, mul(ubo.model, float4(input.in_position, 0.0, 1.0))));
-    output.colour = input.in_colour;
+    output.fragment_colour = input.in_colour;
+    output.fragment_texture_coordinates = input.in_texture_coordinates;
     return output;
 }
 
 // inVert = input vertex
+Sampler2D texture;
 
 [shader("fragment")]
 float4 fragMain(VSOutput in_vert) : SV_Target
 {
-    // Add the alpha value of 1.0 to set colour to opaque.
-    return float4(in_vert.colour, 1.0);
+    // return float4(in_vert.fragment_colour * texture.Sample(in_vert.fragment_texture_coordinates).rgb, 1.0);
+    return texture.Sample(in_vert.fragment_texture_coordinates);
 }

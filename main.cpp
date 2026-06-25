@@ -33,6 +33,7 @@ struct Vertex
 {
     glm::vec2 position;
     glm::vec3 colour;
+    glm::vec2 texture_coordinates;
 
     // We've specified here that each space in the buffer will contain a Vertex object.
     static vk::VertexInputBindingDescription getBindingDescription()
@@ -54,21 +55,27 @@ struct Vertex
     //
     // We've then also specified that the second position (location 1) will contain the colour,
     // which we've specified the location of in the vertex struct also.
-    static std::array<vk::VertexInputAttributeDescription, 2> getAttributeDescriptions()
+    static std::array<vk::VertexInputAttributeDescription, 3> getAttributeDescriptions()
     {
         return {{
             {
                 .location = 0,
                 .binding  = 0,
                 .format   = vk::Format::eR32G32Sfloat,
-                .offset   = offsetof(Vertex, position)
+                .offset   = offsetof(Vertex, position),
             },
             {
                 .location = 1,
                 .binding  = 0,
                 .format   = vk::Format::eR32G32B32Sfloat,
-                .offset   = offsetof(Vertex, colour)
-            }
+                .offset   = offsetof(Vertex, colour),
+            },
+            {
+                .location = 2,
+                .binding  = 0,
+                .format   = vk::Format::eR32G32Sfloat,
+                .offset   = offsetof(Vertex, texture_coordinates),
+            },
         }};
     }
 };
@@ -81,10 +88,10 @@ struct UniformBufferObject
 };
 
 const std::vector<Vertex> VERTICES = {
-    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-    {{ 0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
-    {{ 0.5f,  0.5f}, {0.0f, 0.0f, 1.0f}},
-    {{-0.5f,  0.5f}, {1.0f, 1.0f, 1.0f}}
+    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
+    {{ 0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
+    {{ 0.5f,  0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
+    {{-0.5f,  0.5f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}},
 };
 
 // You can use u16 or u32
@@ -618,16 +625,26 @@ private:
     void createDescriptorSetLayout()
     {
         // Every binding needs to be described through a vk::DescriptorSetLayoutBinding struct.
-        vk::DescriptorSetLayoutBinding uboLayoutBinding{
-            .binding = 0,
-            .descriptorType = vk::DescriptorType::eUniformBuffer,
-            .descriptorCount = 1,  // Number of values in the array. We only have 1 UBO.
-            .stageFlags = vk::ShaderStageFlagBits::eVertex,
+        std::array<vk::DescriptorSetLayoutBinding, 2> bindings{
+            {
+                {
+                    .binding = 0,
+                    .descriptorType = vk::DescriptorType::eUniformBuffer,
+                    .descriptorCount = 1,
+                    .stageFlags = vk::ShaderStageFlagBits::eVertex,
+                },
+                {
+                    .binding = 1,
+                    .descriptorType = vk::DescriptorType::eCombinedImageSampler,
+                    .descriptorCount = 1,
+                    .stageFlags = vk::ShaderStageFlagBits::eFragment,
+                },
+            }
         };
 
         vk::DescriptorSetLayoutCreateInfo layoutInfo{
-            .bindingCount = 1,
-            .pBindings = &uboLayoutBinding,
+            .bindingCount = static_cast<uint32_t>(bindings.size()),
+            .pBindings = bindings.data(),
         };
         m_descriptorSetLayout = vk::raii::DescriptorSetLayout(m_device, layoutInfo);
     }
@@ -1363,10 +1380,19 @@ private:
     {
         // Describe which descriptor types our descriptor sets are going to contains and how many
         // of them there will be.
-        vk::DescriptorPoolSize poolSize{
-            .type = vk::DescriptorType::eUniformBuffer,
-            .descriptorCount = MAX_FRAMES_IN_FLIGHT,
+        std::array<vk::DescriptorPoolSize, 2> poolSize{
+            {
+                {
+                    .type = vk::DescriptorType::eUniformBuffer,
+                    .descriptorCount = MAX_FRAMES_IN_FLIGHT,
+                },
+                {
+                    .type = vk::DescriptorType::eCombinedImageSampler,
+                    .descriptorCount = MAX_FRAMES_IN_FLIGHT,
+                },
+            },
         };
+
         // One descriptor will be allocated for every frame. This pool size structure is referenced
         // by the main vk::DescriptorPoolCreateInfo struct.
         vk::DescriptorPoolCreateInfo poolInfo{
@@ -1374,8 +1400,8 @@ private:
             // underlying VkDescriptorSet when dropped.
             .flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
             .maxSets = MAX_FRAMES_IN_FLIGHT,
-            .poolSizeCount = 1,
-            .pPoolSizes = &poolSize,
+            .poolSizeCount = static_cast<uint32_t>(poolSize.size()),
+            .pPoolSizes = poolSize.data(),
         };
 
         m_descriptorPool = vk::raii::DescriptorPool(m_device, poolInfo);
@@ -1401,16 +1427,34 @@ private:
                 .offset = 0,
                 .range = sizeof(UniformBufferObject),
             };
-            vk::WriteDescriptorSet descriptorWrite{
-                .dstSet          = m_descriptorSets[i],
-                .dstBinding      = 0,
-                .dstArrayElement = 0,
-                .descriptorCount = 1,
-                .descriptorType  = vk::DescriptorType::eUniformBuffer,
-                .pBufferInfo     = &bufferInfo,
+            vk::DescriptorImageInfo imageInfo{
+                .sampler = m_textureSampler,
+                .imageView = m_textureImageView,
+                .imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal,
             };
 
-            m_device.updateDescriptorSets(descriptorWrite, {});
+            std::array<vk::WriteDescriptorSet, 2> descriptorWrites{
+                {
+                    {
+                        .dstSet          = m_descriptorSets[i],
+                        .dstBinding      = 0,
+                        .dstArrayElement = 0,
+                        .descriptorCount = 1,
+                        .descriptorType  = vk::DescriptorType::eUniformBuffer,
+                        .pBufferInfo     = &bufferInfo,
+                    },
+                    {
+                        .dstSet          = m_descriptorSets[i],
+                        .dstBinding      = 1,
+                        .dstArrayElement = 0,
+                        .descriptorCount = 1,
+                        .descriptorType  = vk::DescriptorType::eCombinedImageSampler,
+                        .pImageInfo     = &imageInfo,
+                    },
+                },
+            };
+
+            m_device.updateDescriptorSets(descriptorWrites, {});
         }
     }
 
