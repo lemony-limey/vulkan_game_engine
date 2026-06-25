@@ -151,6 +151,7 @@ private:
     vk::raii::Image                      m_textureImage        = nullptr;
     vk::raii::DeviceMemory               m_textureImageMemory  = nullptr;
     vk::raii::ImageView                  m_textureImageView    = nullptr;
+    vk::raii::Sampler                    m_textureSampler      = nullptr;
 
     // Synchronisation primitives.
     std::vector<vk::raii::Semaphore> m_presentCompleteSemaphores;
@@ -434,11 +435,13 @@ private:
         // Check if the physicalDevice supports the required features
         auto features =
                 physical_device
-                .template getFeatures2<vk::PhysicalDeviceFeatures2, vk::PhysicalDeviceVulkan13Features,
+                .template getFeatures2<vk::PhysicalDeviceFeatures2,
+                    vk::PhysicalDeviceVulkan13Features,
                     vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>();
-        bool supportsRequiredFeatures = features.template get<vk::PhysicalDeviceVulkan13Features>().dynamicRendering &&
-                                        features.template get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().
-                                                 extendedDynamicState;
+        bool supportsRequiredFeatures = features.template get<vk::PhysicalDeviceFeatures2>().features.samplerAnisotropy
+                                    && features.template get<vk::PhysicalDeviceVulkan13Features>().dynamicRendering
+                                    && features.template get<vk::PhysicalDeviceVulkan13Features>().synchronization2
+                                    && features.template get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState;
 
         // Return true if the physicalDevice meets all the criteria
         return supportsVulkan1_3 && supportsGraphics && supportsAllRequiredExtensions && supportsRequiredFeatures;
@@ -494,7 +497,7 @@ private:
                            vk::PhysicalDeviceVulkan13Features,
                            vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>
             featureChain = {
-            {},                                                          // vk::PhysicalDeviceFeatures2
+            {.features = { .samplerAnisotropy = true } },                                                          // vk::PhysicalDeviceFeatures2
             {.shaderDrawParameters = true},                              // vk::PhysicalDeviceVulkan11Features
             {.synchronization2 = true, .dynamicRendering = true},        // vk::PhysicalDeviceVulkan13Features
             {.extendedDynamicState = true}                               // vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT
@@ -1130,7 +1133,7 @@ private:
     void createTextureImage()
     {
         int textureWidth, textureHeight, textureChannels;
-        stbi_uc* pixels = stbi_load("astley.jpg", &textureWidth, &textureHeight, &textureChannels, STBI_rgb_alpha);
+        stbi_uc* pixels = stbi_load("../astley.jpg", &textureWidth, &textureHeight, &textureChannels, STBI_rgb_alpha);
         vk::DeviceSize imageSize = textureWidth * textureHeight * 4;
 
         if (!pixels)
@@ -1266,11 +1269,18 @@ private:
             .addressModeU = vk::SamplerAddressMode::eRepeat,
             .addressModeV = vk::SamplerAddressMode::eRepeat,
             .addressModeW = vk::SamplerAddressMode::eRepeat,
+            .mipLodBias = 0.0f,
             .anisotropyEnable = vk::True,
             .maxAnisotropy = properties.limits.maxSamplerAnisotropy,
             .compareEnable = vk::False,
             .compareOp = vk::CompareOp::eAlways,
+            .minLod = 0.0f,
+            .maxLod = 0.0f,
+            .borderColor = vk::BorderColor::eIntOpaqueBlack,
+            .unnormalizedCoordinates = vk::False,
         };
+
+        m_textureSampler = vk::raii::Sampler(m_device, samplerInfo);
     }
 
 
