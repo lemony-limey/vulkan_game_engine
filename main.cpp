@@ -8,6 +8,7 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <unordered_map>
 #include <vector>
 
 // Disabling constructors enables the use of initialiser lists.
@@ -29,6 +30,12 @@ import vulkan_hpp;
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+
+#define TINYOBJLOADER_IMPLEMENTATION
+#include "tiny_obj_loader.h"
+
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/gtx/hash.hpp>
 
 struct Vertex
 {
@@ -66,7 +73,23 @@ struct Vertex
             vk::VertexInputAttributeDescription(2, 0, vk::Format::eR32G32Sfloat, offsetof(Vertex, texture_coordinates)),
         };
     }
+
+    bool operator==(const Vertex & other) const
+    {
+        return position == other.position && colour == other.colour && texture_coordinates == other.texture_coordinates;
+    }
 };
+
+namespace std
+{
+    template<> struct hash<Vertex>
+    {
+        size_t operator()(Vertex const & vertex) const
+        {
+            return ((hash<glm::vec3>()(vertex.position) ^ (hash<glm::vec3>()(vertex.colour) << 1)) >> 1) ^ (hash<glm::vec2>()(vertex.texture_coordinates) << 1);
+        }
+    };
+}
 
 struct UniformBufferObject
 {
@@ -75,31 +98,33 @@ struct UniformBufferObject
     alignas(16) glm::mat4 projection;
 };
 
-const std::vector<Vertex> VERTICES = {
-    {{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
-    {{ 0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
-    {{ 0.5f,  0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
-    {{-0.5f,  0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}},
+// const std::vector<Vertex> VERTICES = {
+//     {{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
+//     {{ 0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
+//     {{ 0.5f,  0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
+//     {{-0.5f,  0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}},
+//
+//     {{-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
+//     {{ 0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
+//     {{ 0.5f,  0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
+//     {{-0.5f,  0.5f, -0.5f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}},
+// };
+//
+// // You can use u16 or u32
+// const std::vector<uint32_t> INDICES = {
+//     0, 1, 2,
+//     2, 3, 0,
+//
+//     4, 5, 6,
+//     6, 7, 4,
+// };
 
-    {{-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
-    {{ 0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
-    {{ 0.5f,  0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
-    {{-0.5f,  0.5f, -0.5f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}},
-};
-
-// You can use u16 or u32
-const std::vector<uint16_t> INDICES = {
-    0, 1, 2,
-    2, 3, 0,
-
-    4, 5, 6,
-    6, 7, 4,
-};
-
-constexpr uint32_t    WIDTH  = 800;
-constexpr uint32_t    HEIGHT = 600;
+constexpr uint32_t    WIDTH                 = 800;
+constexpr uint32_t    HEIGHT                = 600;
 constexpr std::string SHADER_SPIRV_FILENAME = "../shaders/slang.spv";
-constexpr int         MAX_FRAMES_IN_FLIGHT = 2;
+const     std::string MODEL_PATH            = "../models/viking_room.obj";
+const     std::string TEXTURE_PATH          = "../textures/viking_room.png";
+constexpr int         MAX_FRAMES_IN_FLIGHT  = 2;
 
 const std::vector<char const *> VALIDATION_LAYERS = {
     "VK_LAYER_KHRONOS_validation"
@@ -142,6 +167,8 @@ private:
     uint32_t                             m_queueIndex          = ~0;
     vk::raii::CommandPool                m_commandPool         = nullptr;
     std::vector<vk::raii::CommandBuffer> m_commandBuffers;
+    std::vector<Vertex>                  m_vertices;
+    std::vector<uint32_t>                m_indices;
     vk::raii::Buffer                     m_vertexBuffer        = nullptr;
     vk::raii::DeviceMemory               m_vertexBufferMemory  = nullptr;
     vk::raii::Buffer                     m_indexBuffer         = nullptr;
@@ -211,6 +238,7 @@ private:
         createTextureImage();
         createTextureImageView();
         createTextureSampler();
+        loadModel();
         createVertexBuffer();
         createIndexBuffer();
         createUniformBuffers();
@@ -290,11 +318,11 @@ private:
         auto layerProperties    = m_context.enumerateInstanceLayerProperties();
         auto unsupportedLayerIt = std::ranges::find_if(
             requiredLayers,
-            [&layerProperties](auto const& requiredLayer)
+            [&layerProperties](auto const & requiredLayer)
             {
                 return std::ranges::none_of(
                     layerProperties,
-                    [requiredLayer](auto const& layerProperty)
+                    [requiredLayer](auto const & layerProperty)
                     {
                         return strcmp(layerProperty.layerName, requiredLayer) == 0;
                     }
@@ -314,11 +342,11 @@ private:
         auto unsupportedPropertyIt =
                 std::ranges::find_if(
                     requiredExtensions,
-                    [&extensionProperties](auto const& requiredExtension)
+                    [&extensionProperties](auto const & requiredExtension)
                     {
                         return std::ranges::none_of(
                             extensionProperties,
-                            [requiredExtension](auto const& extensionProperty)
+                            [requiredExtension](auto const & extensionProperty)
                             {
                                 return strcmp(extensionProperty.extensionName, requiredExtension) == 0;
                             }
@@ -411,7 +439,7 @@ private:
     }
 
 
-    bool isDeviceSuitable(vk::raii::PhysicalDevice const& physical_device)
+    bool isDeviceSuitable(vk::raii::PhysicalDevice const & physical_device)
     {
         // Check if the physicalDevice supports the Vulkan 1.3 API version
         bool supportsVulkan1_3 = physical_device.getProperties().apiVersion >= VK_API_VERSION_1_3;
@@ -428,11 +456,11 @@ private:
         bool supportsAllRequiredExtensions =
                 std::ranges::all_of(
                     m_requiredDeviceExtension,
-                    [&availableDeviceExtensions](auto const& requiredDeviceExtension)
+                    [&availableDeviceExtensions](auto const & requiredDeviceExtension)
                     {
                         return std::ranges::any_of(
                             availableDeviceExtensions,
-                            [requiredDeviceExtension](auto const& availableDeviceExtension)
+                            [requiredDeviceExtension](auto const & availableDeviceExtension)
                             {
                                 return strcmp(availableDeviceExtension.extensionName, requiredDeviceExtension) == 0;
                             }
@@ -531,7 +559,7 @@ private:
     }
 
 
-    vk::SurfaceFormatKHR chooseSwapSurfaceFormat(std::vector<vk::SurfaceFormatKHR> const &availableFormats)
+    vk::SurfaceFormatKHR chooseSwapSurfaceFormat(std::vector<vk::SurfaceFormatKHR> const & availableFormats)
     {
         assert(!availableFormats.empty());
 
@@ -548,7 +576,7 @@ private:
     }
 
 
-    vk::PresentModeKHR chooseSwapPresentMode(std::vector<vk::PresentModeKHR> const &availablePresentModes)
+    vk::PresentModeKHR chooseSwapPresentMode(std::vector<vk::PresentModeKHR> const & availablePresentModes)
     {
         assert(std::ranges::any_of(availablePresentModes, [](auto presentMode) { return presentMode == vk::PresentModeKHR::eFifo; }));
         return std::ranges::any_of(
@@ -563,7 +591,7 @@ private:
 
 
     // Extent = resolution
-    vk::Extent2D chooseSwapExtent(vk::SurfaceCapabilitiesKHR const &capabilities)
+    vk::Extent2D chooseSwapExtent(vk::SurfaceCapabilitiesKHR const & capabilities)
     {
         if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max())
         {
@@ -791,7 +819,7 @@ private:
     }
 
 
-    static std::vector<char> readFile(const std::string& filename)
+    static std::vector<char> readFile(const std::string & filename)
     {
         // std::cout << "pwd: " << std::filesystem::current_path() << "\n";
         // std::cout << "file: " << filename << std::endl;
@@ -909,9 +937,9 @@ private:
     }
 
 
-    void recordCommandBuffer(uint32_t imageIndex)
+    void recordCommandBuffer(const uint32_t imageIndex)
     {
-        auto &commandBuffer = m_commandBuffers[m_frameIndex];
+        const auto & commandBuffer = m_commandBuffers[m_frameIndex];
         commandBuffer.begin({});
 
         // Transition the image layout for rendering.
@@ -1001,7 +1029,7 @@ private:
 
         commandBuffer.bindVertexBuffers(0, *m_vertexBuffer, {0});
         // Could also use u32 if we needed more vertices, but we don't at the moment.
-        commandBuffer.bindIndexBuffer(*m_indexBuffer, 0, vk::IndexType::eUint16);
+        commandBuffer.bindIndexBuffer(*m_indexBuffer, 0, vk::IndexTypeValue<decltype(m_indices)::value_type>::value);
 
         // Descriptor sets are not unique to graphics pipelines, so we need to specify whether we
         // want to bind them to the graphics or compute pipeline.
@@ -1014,7 +1042,7 @@ private:
         );
 
         commandBuffer.drawIndexed(
-            static_cast<uint32_t>(INDICES.size()), // indexCount
+            static_cast<uint32_t>(m_indices.size()), // indexCount
             1, // instanceCount (1 is specified because instanced rendering is not used here)
             0, // firstIndex (offset into the index buffer for the lowest value of SV_VertexId)
             0, // vertexOffset (offset to add to the vertex index before indexing into the vertex buffer)
@@ -1052,14 +1080,14 @@ private:
      * color attachment.
      */
     void transitionImageLayout(
-        uint32_t                imageIndex,
-        vk::ImageLayout         oldLayout,
-        vk::ImageLayout         newLayout,
-        vk::AccessFlags2        srcAccessMask,
-        vk::AccessFlags2        destAccessMask,
-        vk::PipelineStageFlags2 srcStageMask,
-        vk::PipelineStageFlags2 destStageMask
-    )
+        const uint32_t                imageIndex,
+              vk::ImageLayout         oldLayout,
+              vk::ImageLayout         newLayout,
+        const vk::AccessFlags2        srcAccessMask,
+        const vk::AccessFlags2        destAccessMask,
+        const vk::PipelineStageFlags2 srcStageMask,
+        const vk::PipelineStageFlags2 destStageMask
+    ) const
     {
         vk::ImageMemoryBarrier2 barrier = {
             .srcStageMask = srcStageMask,
@@ -1080,7 +1108,7 @@ private:
             }
         };
 
-        vk::DependencyInfo dependencyInfo = {
+        const vk::DependencyInfo dependencyInfo = {
             .dependencyFlags = {},
             .imageMemoryBarrierCount = 1,
             .pImageMemoryBarriers = &barrier,
@@ -1237,7 +1265,7 @@ private:
     void createTextureImage()
     {
         int textureWidth, textureHeight, textureChannels;
-        stbi_uc* pixels = stbi_load("../astley.jpg", &textureWidth, &textureHeight, &textureChannels, STBI_rgb_alpha);
+        stbi_uc* pixels = stbi_load(TEXTURE_PATH.c_str(), &textureWidth, &textureHeight, &textureChannels, STBI_rgb_alpha);
         vk::DeviceSize imageSize = textureWidth * textureHeight * 4;
 
         if (!pixels)
@@ -1396,9 +1424,58 @@ private:
     }
 
 
+    void loadModel()
+    {
+        tinyobj::attrib_t attributes;
+        std::vector<tinyobj::shape_t> shapes;
+        std::vector<tinyobj::material_t> materials;
+        std::string warn, err;
+
+        if (!tinyobj::LoadObj(&attributes, &shapes, &materials, &warn, &err, MODEL_PATH.c_str()))
+        {
+            throw std::runtime_error("loadModel(): " + warn + err);
+        }
+
+        std::unordered_map<Vertex, uint32_t> uniqueVertices{};
+
+        for (const auto & shape : shapes)
+        {
+            for (const auto & index : shape.mesh.indices)
+            {
+                Vertex vertex{};
+
+                vertex.position = {
+                    attributes.vertices[3 * index.vertex_index + 0],
+                    attributes.vertices[3 * index.vertex_index + 1],
+                    attributes.vertices[3 * index.vertex_index + 2],
+                };
+
+                vertex.texture_coordinates = {
+                    attributes.texcoords[2 * index.texcoord_index + 0],
+                    1.0f - attributes.texcoords[2 * index.texcoord_index + 1],
+                };
+
+                vertex.colour = {1.0f, 1.0f, 1.0f};
+#if 1
+                auto [it, inserted] = uniqueVertices.insert({vertex, static_cast<uint32_t>(m_vertices.size())});
+                if (inserted)
+                {
+                    m_vertices.push_back(vertex);
+                }
+
+                m_indices.push_back(it->second);
+#else
+                m_vertices.push_back(vertex);
+                m_indices.push_back(static_cast<uint32_t>(m_indices.size()));
+#endif
+            }
+        }
+    }
+
+
     void createVertexBuffer()
     {
-        vk::DeviceSize bufferSize = sizeof(VERTICES[0]) * VERTICES.size();
+        vk::DeviceSize bufferSize = sizeof(m_vertices[0]) * m_vertices.size();
 
         auto [stagingBuffer, stagingBufferMemory] = createBuffer(
             bufferSize,
@@ -1409,7 +1486,7 @@ private:
         // Keep in mind that while the driver will know we have written this data to the buffer,
         // the GPU will not know until we call vk::raii::Queue::submit().
         void* dataStaging = stagingBufferMemory.mapMemory(0, bufferSize);
-        memcpy(dataStaging, VERTICES.data(), bufferSize);
+        memcpy(dataStaging, m_vertices.data(), bufferSize);
         stagingBufferMemory.unmapMemory();
 
         std::tie(m_vertexBuffer, m_vertexBufferMemory) = createBuffer(
@@ -1424,7 +1501,7 @@ private:
 
     void createIndexBuffer()
     {
-        vk::DeviceSize bufferSize = sizeof(INDICES[0]) * INDICES.size();
+        vk::DeviceSize bufferSize = sizeof(m_indices[0]) * m_indices.size();
 
         auto [stagingBuffer, stagingBufferMemory] = createBuffer(
             bufferSize,
@@ -1435,7 +1512,7 @@ private:
         // Keep in mind that while the driver will know we have written this data to the buffer,
         // the GPU will not know until we call vk::raii::Queue::submit().
         void* dataStaging = stagingBufferMemory.mapMemory(0, bufferSize);
-        memcpy(dataStaging, INDICES.data(), bufferSize);
+        memcpy(dataStaging, m_indices.data(), bufferSize);
         stagingBufferMemory.unmapMemory();
 
         std::tie(m_indexBuffer, m_indexBufferMemory) = createBuffer(

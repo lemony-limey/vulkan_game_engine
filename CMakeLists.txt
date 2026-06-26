@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD 23)
 add_executable(hello_triangle_vulkan
         main.cpp
         stb_image.h
+        tiny_obj_loader.h
 )
 
 # Find Vulkan
