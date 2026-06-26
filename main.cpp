@@ -23,6 +23,7 @@ import vulkan_hpp;
 #define GLFW_INCLUDE_VULKAN        // REQUIRED only for GLFW CreateWindowSurface.
 #define GLM_FORCE_DEFAULT_ALIGNED_GENTYPES
 #include <GLFW/glfw3.h>
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -31,7 +32,7 @@ import vulkan_hpp;
 
 struct Vertex
 {
-    glm::vec2 position;
+    glm::vec3 position;
     glm::vec3 colour;
     glm::vec2 texture_coordinates;
 
@@ -57,26 +58,13 @@ struct Vertex
     // which we've specified the location of in the vertex struct also.
     static std::array<vk::VertexInputAttributeDescription, 3> getAttributeDescriptions()
     {
-        return {{
-            {
-                .location = 0,
-                .binding  = 0,
-                .format   = vk::Format::eR32G32Sfloat,
-                .offset   = offsetof(Vertex, position),
-            },
-            {
-                .location = 1,
-                .binding  = 0,
-                .format   = vk::Format::eR32G32B32Sfloat,
-                .offset   = offsetof(Vertex, colour),
-            },
-            {
-                .location = 2,
-                .binding  = 0,
-                .format   = vk::Format::eR32G32Sfloat,
-                .offset   = offsetof(Vertex, texture_coordinates),
-            },
-        }};
+        // Bindings for all things below are 0, because 0 relates to the vertex attributes.
+        // Binding 1 is the texture itself, as described in the descriptor set description.
+        return {
+            vk::VertexInputAttributeDescription(0, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, position)),
+            vk::VertexInputAttributeDescription(1, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, colour)),
+            vk::VertexInputAttributeDescription(2, 0, vk::Format::eR32G32Sfloat, offsetof(Vertex, texture_coordinates)),
+        };
     }
 };
 
@@ -88,16 +76,24 @@ struct UniformBufferObject
 };
 
 const std::vector<Vertex> VERTICES = {
-    {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
-    {{ 0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
-    {{ 0.5f,  0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
-    {{-0.5f,  0.5f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}},
+    {{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
+    {{ 0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
+    {{ 0.5f,  0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
+    {{-0.5f,  0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}},
+
+    {{-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
+    {{ 0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
+    {{ 0.5f,  0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
+    {{-0.5f,  0.5f, -0.5f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}},
 };
 
 // You can use u16 or u32
 const std::vector<uint16_t> INDICES = {
     0, 1, 2,
     2, 3, 0,
+
+    4, 5, 6,
+    6, 7, 4,
 };
 
 constexpr uint32_t    WIDTH  = 800;
@@ -159,6 +155,9 @@ private:
     vk::raii::DeviceMemory               m_textureImageMemory  = nullptr;
     vk::raii::ImageView                  m_textureImageView    = nullptr;
     vk::raii::Sampler                    m_textureSampler      = nullptr;
+    vk::raii::Image                      m_depthImage          = nullptr;
+    vk::raii::DeviceMemory               m_depthImageMemory    = nullptr;
+    vk::raii::ImageView                  m_depthImageView      = nullptr;
 
     // Synchronisation primitives.
     std::vector<vk::raii::Semaphore> m_presentCompleteSemaphores;
@@ -191,7 +190,7 @@ private:
 
     static void framebufferResizeCallback(GLFWwindow* window, int width, int height)
     {
-        auto app = static_cast<HelloTriangleApplication*>(glfwGetWindowUserPointer(window));
+        const auto app = static_cast<HelloTriangleApplication*>(glfwGetWindowUserPointer(window));
         app->m_framebufferResized = true;
     }
 
@@ -208,6 +207,7 @@ private:
         createDescriptorSetLayout();
         createGraphicsPipeline();
         createCommandPool();
+        createDepthResources();
         createTextureImage();
         createTextureImageView();
         createTextureSampler();
@@ -265,6 +265,7 @@ private:
         cleanupSwapChain();
         createSwapChain();
         createImageViews();
+        createDepthResources();
     }
 
 
@@ -720,6 +721,14 @@ private:
             .sampleShadingEnable  = vk::False,
         };
 
+        vk::PipelineDepthStencilStateCreateInfo depthStencil{
+            .depthTestEnable = vk::True,
+            .depthWriteEnable = vk::True,
+            .depthCompareOp = vk::CompareOp::eLess,
+            .depthBoundsTestEnable = vk::False,
+            .stencilTestEnable = vk::False,
+        };
+
         // Configure colour blending (currently disabled).
         vk::PipelineColorBlendAttachmentState colourBlendAttachment{
             .blendEnable    = vk::False,
@@ -746,6 +755,8 @@ private:
         };
         m_pipelineLayout = vk::raii::PipelineLayout(m_device, pipelineLayoutInfo);
 
+        vk::Format depthFormat = findDepthFormat();
+
         vk::StructureChain<vk::GraphicsPipelineCreateInfo, vk::PipelineRenderingCreateInfo> pipelineCreateInfoChain = {
             {
                 .stageCount = 2,
@@ -755,6 +766,7 @@ private:
                 .pViewportState = &viewportState,
                 .pRasterizationState = &rasterizer,
                 .pMultisampleState = &multisampling,
+                .pDepthStencilState = &depthStencil,
                 .pColorBlendState = &colourBlending,
                 .pDynamicState = &dynamicState,
                 .layout = m_pipelineLayout,
@@ -764,6 +776,7 @@ private:
             {
                 .colorAttachmentCount = 1,
                 .pColorAttachmentFormats = &m_swapChainSurfaceFormat.format,
+                .depthAttachmentFormat = depthFormat,
             }
         };
 
@@ -805,7 +818,7 @@ private:
 
 
     // Create a shader module from the SPIR-V bytecode.
-    [[nodiscard]] vk::raii::ShaderModule createShaderModule(const std::vector<char>& code) const
+    [[nodiscard]] vk::raii::ShaderModule createShaderModule(const std::vector<char> & code) const
     {
         vk::ShaderModuleCreateInfo createInfo{
             .codeSize = code.size() * sizeof(char),
@@ -825,6 +838,56 @@ private:
         };
 
         m_commandPool = vk::raii::CommandPool(m_device, poolInfo);
+    }
+
+
+    void createDepthResources()
+    {
+        vk::Format depthFormat = findDepthFormat();
+        std::tie(m_depthImage, m_depthImageMemory) = createImage(
+            m_swapChainExtent.width,
+            m_swapChainExtent.height,
+            depthFormat,
+            vk::ImageTiling::eOptimal,
+            vk::ImageUsageFlagBits::eDepthStencilAttachment,
+            vk::MemoryPropertyFlagBits::eDeviceLocal
+        );
+        m_depthImageView = createImageView(m_depthImage, depthFormat, vk::ImageAspectFlagBits::eDepth);
+    }
+
+
+    vk::Format findSupportedFormat(
+        const std::vector<vk::Format> & candidates,
+        vk::ImageTiling tiling,
+        vk::FormatFeatureFlags features
+    )
+    {
+        for (const auto format : candidates)
+        {
+            vk::FormatProperties properties = m_physicalDevice.getFormatProperties(format);
+
+            if (((tiling == vk::ImageTiling::eLinear) && ((properties.linearTilingFeatures & features) == features))
+                || ((tiling == vk::ImageTiling::eOptimal) && ((properties.optimalTilingFeatures & features) == features)))
+            {
+                return format;
+            }
+        }
+
+        throw std::runtime_error("findSupportedFormat(): failed to find supported format!");
+    }
+
+
+    vk::Format findDepthFormat()
+    {
+        return findSupportedFormat(
+            {
+                vk::Format::eD32Sfloat,
+                vk::Format::eD32SfloatS8Uint,
+                vk::Format::eD24UnormS8Uint,
+            },
+            vk::ImageTiling::eOptimal,
+            vk::FormatFeatureFlagBits::eDepthStencilAttachment
+        );
     }
 
 
@@ -852,19 +915,42 @@ private:
         commandBuffer.begin({});
 
         // Transition the image layout for rendering.
-        transitionImageLayout(
-            imageIndex,
+        transition_image_layout(
+            m_swapChainImages[imageIndex],
             vk::ImageLayout::eUndefined,
             vk::ImageLayout::eColorAttachmentOptimal,
             // srcAccessMask (no need to wait for previous operations).
             {},
             vk::AccessFlagBits2::eColorAttachmentWrite,
             vk::PipelineStageFlagBits2::eColorAttachmentOutput,
-            vk::PipelineStageFlagBits2::eColorAttachmentOutput
+            vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            vk::ImageAspectFlagBits::eColor
         );
+
+        // Before starting rendering, transition the swapchain image to vk::ImageLayout::eColorAttachmentOptimal
+        transition_image_layout(
+            *m_depthImage,
+            vk::ImageLayout::eUndefined,
+            vk::ImageLayout::eDepthAttachmentOptimal,
+            vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
+            vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
+            vk::PipelineStageFlagBits2::eEarlyFragmentTests | vk::PipelineStageFlagBits2::eLateFragmentTests,
+            vk::PipelineStageFlagBits2::eEarlyFragmentTests | vk::PipelineStageFlagBits2::eLateFragmentTests,
+            vk::ImageAspectFlagBits::eDepth
+        );
+
 
         // Set up the colour attachment.
         vk::ClearValue clearColour = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 1.0f);
+        // 1.0f lies at the far view plane and 0.0f at the near view plane.
+        vk::ClearValue clearDepth = vk::ClearDepthStencilValue(1.0f, 0);
+        vk::RenderingAttachmentInfo depthAttachmentInfo = {
+            .imageView = m_depthImageView,
+            .imageLayout = vk::ImageLayout::eDepthAttachmentOptimal,
+            .loadOp = vk::AttachmentLoadOp::eClear,
+            .storeOp = vk::AttachmentStoreOp::eDontCare,
+            .clearValue = clearDepth,
+        };
         vk::RenderingAttachmentInfo attachmentInfo = {
             // imageView specifies which image view to render to.
             .imageView = m_swapChainImageViews[imageIndex],
@@ -883,6 +969,7 @@ private:
             .layerCount = 1,
             .colorAttachmentCount = 1,
             .pColorAttachments = &attachmentInfo,
+            .pDepthAttachment = &depthAttachmentInfo,
         };
 
         // Begin rendering.
@@ -1216,7 +1303,7 @@ private:
         vk::ImageCreateInfo imageInfo{
             .imageType   = vk::ImageType::e2D,  // What coordinate system (e.g., 1D (data), 2D (texture), 3D (voxel volume))
             .format      = format,
-            .extent      = {width, height, .depth = 1},  // How many texels on each axis.
+            .extent      = {width, height, 1},  // How many texels on each axis.
             .mipLevels   = 1,
             .arrayLayers = 1,
             .samples     = vk::SampleCountFlagBits::e1,
@@ -1246,13 +1333,17 @@ private:
     }
 
 
-    vk::raii::ImageView createImageView(vk::Image const & image, vk::Format format)
+    vk::raii::ImageView createImageView(
+        vk::Image const & image,
+        vk::Format format,
+        vk::ImageAspectFlags aspectFlags
+    )
     {
         vk::ImageViewCreateInfo imageViewCreateInfo{
             .image = image,
             .viewType = vk::ImageViewType::e2D,
             .format = format,
-            .subresourceRange = { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 }
+            .subresourceRange = { aspectFlags, 0, 1, 0, 1 }
         };
         return vk::raii::ImageView(m_device, imageViewCreateInfo);
     }
@@ -1265,14 +1356,18 @@ private:
         m_swapChainImageViews.reserve(m_swapChainImages.size());
         for (auto & image : m_swapChainImages)
         {
-            m_swapChainImageViews.emplace_back(createImageView(image, m_swapChainSurfaceFormat.format));
+            m_swapChainImageViews.emplace_back(createImageView(
+                image,
+                m_swapChainSurfaceFormat.format,
+                vk::ImageAspectFlagBits::eColor
+            ));
         }
     }
 
 
     void createTextureImageView()
     {
-        m_textureImageView = createImageView(*m_textureImage, vk::Format::eR8G8B8A8Srgb);
+        m_textureImageView = createImageView(*m_textureImage, vk::Format::eR8G8B8A8Srgb, vk::ImageAspectFlagBits::eColor);
     }
 
 
@@ -1543,6 +1638,41 @@ private:
         };
         m_queue.submit(submitInfo, nullptr);
         m_queue.waitIdle();
+    }
+
+
+    void transition_image_layout(
+        vk::Image               image,
+        vk::ImageLayout         old_layout,
+        vk::ImageLayout         new_layout,
+        vk::AccessFlags2        src_access_mask,
+        vk::AccessFlags2        dst_access_mask,
+        vk::PipelineStageFlags2 src_stage_mask,
+        vk::PipelineStageFlags2 dst_stage_mask,
+        vk::ImageAspectFlags    image_aspect_flags
+    )
+    {
+        vk::ImageMemoryBarrier2 barrier = {
+            .srcStageMask        = src_stage_mask,
+            .srcAccessMask       = src_access_mask,
+            .dstStageMask        = dst_stage_mask,
+            .dstAccessMask       = dst_access_mask,
+            .oldLayout           = old_layout,
+            .newLayout           = new_layout,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image               = image,
+            .subresourceRange    = {
+                .aspectMask     = image_aspect_flags,
+                .baseMipLevel   = 0,
+                .levelCount     = 1,
+                .baseArrayLayer = 0,
+                .layerCount     = 1}};
+        vk::DependencyInfo dependency_info = {
+            .dependencyFlags         = {},
+            .imageMemoryBarrierCount = 1,
+            .pImageMemoryBarriers    = &barrier};
+        m_commandBuffers[m_frameIndex].pipelineBarrier2(dependency_info);
     }
 
 

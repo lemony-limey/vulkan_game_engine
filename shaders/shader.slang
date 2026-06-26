@@ -1,6 +1,6 @@
 struct VSInput
 {
-    float2 in_position;
+    float3 in_position;
     float3 in_colour;
     float2 in_texture_coordinates;
 };
@@ -27,7 +27,7 @@ struct VSOutput
 VSOutput vertMain(VSInput input)
 {
     VSOutput output;
-    output.sv_position = mul(ubo.projection, mul(ubo.view, mul(ubo.model, float4(input.in_position, 0.0, 1.0))));
+    output.sv_position = mul(ubo.projection, mul(ubo.view, mul(ubo.model, float4(input.in_position, 1.0))));
     output.fragment_colour = input.in_colour;
     output.fragment_texture_coordinates = input.in_texture_coordinates;
     return output;
