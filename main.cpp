@@ -178,7 +178,7 @@ private:
     std::vector<void*>                   m_uniformBuffersMapped;
     vk::raii::DescriptorPool             m_descriptorPool      = nullptr;
     std::vector<vk::raii::DescriptorSet> m_descriptorSets;
-    uint32_t                             m_mipLevels;
+    uint32_t                             m_mipLevels           = 0;
     vk::raii::Image                      m_textureImage        = nullptr;
     vk::raii::DeviceMemory               m_textureImageMemory  = nullptr;
     vk::raii::ImageView                  m_textureImageView    = nullptr;
@@ -186,6 +186,10 @@ private:
     vk::raii::Image                      m_depthImage          = nullptr;
     vk::raii::DeviceMemory               m_depthImageMemory    = nullptr;
     vk::raii::ImageView                  m_depthImageView      = nullptr;
+    vk::SampleCountFlagBits              m_msaaSamples;
+    vk::raii::Image                      m_colourImage         = nullptr;
+    vk::raii::DeviceMemory               m_colourImageMemory   = nullptr;
+    vk::raii::ImageView                  m_colourImageView     = nullptr;
 
     // Synchronisation primitives.
     std::vector<vk::raii::Semaphore> m_presentCompleteSemaphores;
@@ -235,6 +239,7 @@ private:
         createDescriptorSetLayout();
         createGraphicsPipeline();
         createCommandPool();
+        createColourResources();
         createDepthResources();
         createTextureImage();
         createTextureImageView();
@@ -294,6 +299,7 @@ private:
         cleanupSwapChain();
         createSwapChain();
         createImageViews();
+        createColourResources();
         createDepthResources();
     }
 
@@ -488,23 +494,42 @@ private:
     void pickPhysicalDevice()
     {
         std::vector<vk::raii::PhysicalDevice> physicalDevices = m_instance.enumeratePhysicalDevices();
-        // std::cout << "Number of physical devices: " << physicalDevices.size() << std::endl;
 
         if (physicalDevices.empty())
         {
             throw std::runtime_error("pickPhysicalDevice(): there are no Vulkan-compatible GPUs on the device");
         }
 
-        // auto const devIter = std::ranges::find_if(
-        //     physicalDevices,
-        //     [&](auto const& physical_device) { return isDeviceSuitable(physical_device); }
-        // );
-        // if (devIter == physicalDevices.end())
-        // {
-        //     throw std::runtime_error("pickPhysicalDevice(): failed to find a suitable GPU!");
-        // }
-        // physicalDevice = *devIter;
-        m_physicalDevice = physicalDevices.front();
+        for (const auto & device : physicalDevices)
+        {
+            if (isDeviceSuitable(device))
+            {
+                m_physicalDevice = device;
+                m_msaaSamples = getMaxUsableSampleCount();
+                break;
+            }
+        }
+
+        if (m_physicalDevice == nullptr)
+        {
+            throw std::runtime_error("pickPhysicalDevice(): failed to find a suitable GPU!");
+        }
+    }
+
+
+    vk::SampleCountFlagBits getMaxUsableSampleCount()
+    {
+        vk::PhysicalDeviceProperties physicalDeviceProperties = m_physicalDevice.getProperties();
+
+        vk::SampleCountFlags counts = physicalDeviceProperties.limits.framebufferColorSampleCounts
+            & physicalDeviceProperties.limits.framebufferDepthSampleCounts;
+        if (counts & vk::SampleCountFlagBits::e64) { return vk::SampleCountFlagBits::e64; }
+        if (counts & vk::SampleCountFlagBits::e32) { return vk::SampleCountFlagBits::e32; }
+        if (counts & vk::SampleCountFlagBits::e16) { return vk::SampleCountFlagBits::e16; }
+        if (counts & vk::SampleCountFlagBits::e8) { return vk::SampleCountFlagBits::e8; }
+        if (counts & vk::SampleCountFlagBits::e4) { return vk::SampleCountFlagBits::e4; }
+        if (counts & vk::SampleCountFlagBits::e2) { return vk::SampleCountFlagBits::e2; }
+        return vk::SampleCountFlagBits::e1;
     }
 
 
@@ -534,7 +559,7 @@ private:
                            vk::PhysicalDeviceVulkan13Features,
                            vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>
             featureChain = {
-            {.features = { .samplerAnisotropy = true } },                                                          // vk::PhysicalDeviceFeatures2
+            {.features = { .sampleRateShading = true, .samplerAnisotropy = true } },                                                          // vk::PhysicalDeviceFeatures2
             {.shaderDrawParameters = true},                              // vk::PhysicalDeviceVulkan11Features
             {.synchronization2 = true, .dynamicRendering = true},        // vk::PhysicalDeviceVulkan13Features
             {.extendedDynamicState = true}                               // vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT
@@ -714,6 +739,7 @@ private:
         // Lists of input vertices will represent triangles.
         vk::PipelineInputAssemblyStateCreateInfo inputAssembly{
             .topology = vk::PrimitiveTopology::eTriangleList,
+            .primitiveRestartEnable = vk::False,
         };
 
         std::vector<vk::DynamicState> dynamicStates = {
@@ -746,8 +772,9 @@ private:
         // Multisampling is a way to perform antialiasing, and is disabled for
         // now.
         vk::PipelineMultisampleStateCreateInfo multisampling{
-            .rasterizationSamples = vk::SampleCountFlagBits::e1,
-            .sampleShadingEnable  = vk::False,
+            .rasterizationSamples = m_msaaSamples,
+            .sampleShadingEnable  = vk::True,
+            .minSampleShading     = 0.2f,
         };
 
         vk::PipelineDepthStencilStateCreateInfo depthStencil{
@@ -870,6 +897,26 @@ private:
     }
 
 
+    void createColourResources()
+    {
+        vk::Format colourFormat = m_swapChainSurfaceFormat.format;
+
+        createImage(
+            m_swapChainExtent.width,
+            m_swapChainExtent.height,
+            1,
+            m_msaaSamples,
+            colourFormat,
+            vk::ImageTiling::eOptimal,
+            vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment,
+            vk::MemoryPropertyFlagBits::eDeviceLocal,
+            m_colourImage,
+            m_colourImageMemory
+        );
+        m_colourImageView = createImageView(m_colourImage, colourFormat, vk::ImageAspectFlagBits::eColor, 1);
+    }
+
+
     void createDepthResources()
     {
         vk::Format depthFormat = findDepthFormat();
@@ -877,6 +924,7 @@ private:
             m_swapChainExtent.width,
             m_swapChainExtent.height,
             1,
+            m_msaaSamples,
             depthFormat,
             vk::ImageTiling::eOptimal,
             vk::ImageUsageFlagBits::eDepthStencilAttachment,
@@ -890,8 +938,8 @@ private:
 
     vk::Format findSupportedFormat(
         const std::vector<vk::Format> & candidates,
-        vk::ImageTiling tiling,
-        vk::FormatFeatureFlags features
+        vk::ImageTiling                 tiling,
+        vk::FormatFeatureFlags          features
     )
     {
         for (const auto format : candidates)
@@ -943,10 +991,10 @@ private:
 
     void recordCommandBuffer(const uint32_t imageIndex)
     {
-        const auto & commandBuffer = m_commandBuffers[m_frameIndex];
+        auto & commandBuffer = m_commandBuffers[m_frameIndex];
         commandBuffer.begin({});
 
-        // Transition the image layout for rendering.
+        // Before starting rendering, transition the swapchain image to vk::ImageLayout::eColorAttachmentOptimal
         transition_image_layout(
             m_swapChainImages[imageIndex],
             vk::ImageLayout::eUndefined,
@@ -958,8 +1006,18 @@ private:
             vk::PipelineStageFlagBits2::eColorAttachmentOutput,
             vk::ImageAspectFlagBits::eColor
         );
-
-        // Before starting rendering, transition the swapchain image to vk::ImageLayout::eColorAttachmentOptimal
+        // Transition the multisampled colour image to COLOR_ATTACHMENT_OPTIMAL.
+        transition_image_layout(
+            *m_colourImage,
+            vk::ImageLayout::eUndefined,
+            vk::ImageLayout::eColorAttachmentOptimal,
+            vk::AccessFlagBits2::eColorAttachmentWrite,
+            vk::AccessFlagBits2::eColorAttachmentWrite,
+            vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            vk::ImageAspectFlagBits::eColor
+        );
+        // Transition the depth image to DEPTH_ATTACHMENT_OPTIMAL
         transition_image_layout(
             *m_depthImage,
             vk::ImageLayout::eUndefined,
@@ -976,10 +1034,14 @@ private:
         // 1.0f lies at the far view plane and 0.0f at the near view plane.
         vk::ClearValue clearDepth = vk::ClearDepthStencilValue(1.0f, 0);
 
+        // Colour attachment (multisampled) with resolve attachment.
         vk::RenderingAttachmentInfo colourAttachmentInfo = {
             // imageView specifies which image view to render to.
-            .imageView = m_swapChainImageViews[imageIndex],
+            .imageView = m_colourImageView,
             .imageLayout = vk::ImageLayout::eColorAttachmentOptimal,
+            .resolveMode = vk::ResolveModeFlagBits::eAverageKHR,
+            .resolveImageView = m_swapChainImageViews[imageIndex],
+            .resolveImageLayout = vk::ImageLayout::eColorAttachmentOptimal,
             .loadOp = vk::AttachmentLoadOp::eClear,
             .storeOp = vk::AttachmentStoreOp::eStore,
             .clearValue = clearColour,
@@ -1251,6 +1313,7 @@ private:
             textureWidth,
             textureHeight,
             m_mipLevels,
+            vk::SampleCountFlagBits::e1,
             vk::Format::eR8G8B8A8Srgb,
             vk::ImageTiling::eOptimal,
             vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
@@ -1357,8 +1420,8 @@ private:
                 vk::Filter::eLinear
             );
 
-            barrier.oldLayout = vk::ImageLayout::eTransferSrcOptimal;
-            barrier.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+            barrier.oldLayout     = vk::ImageLayout::eTransferSrcOptimal;
+            barrier.newLayout     = vk::ImageLayout::eShaderReadOnlyOptimal;
             barrier.srcAccessMask = vk::AccessFlagBits::eTransferRead;
             barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
 
@@ -1395,11 +1458,11 @@ private:
     }
 
 
-    // std::pair<vk::raii::Image, vk::raii::DeviceMemory>
     void createImage(
         uint32_t                  width,
         uint32_t                  height,
         uint32_t                  mipLevels,
+        vk::SampleCountFlagBits   numSamples,
         vk::Format                format,
         vk::ImageTiling           tiling,
         vk::ImageUsageFlags       usage,
@@ -1414,7 +1477,7 @@ private:
             .extent      = {width, height, 1},  // How many texels on each axis.
             .mipLevels   = mipLevels,
             .arrayLayers = 1,
-            .samples     = vk::SampleCountFlagBits::e1,
+            .samples     = numSamples,
             .tiling      = tiling,  // How texels are arranged in memory.
             .usage       = usage,
             .sharingMode = vk::SharingMode::eExclusive,
@@ -1885,7 +1948,7 @@ private:
         }
         else
         {
-            throw std::invalid_argument("unsupported layout transition!");
+            throw std::invalid_argument("transitionImageLayout(): unsupported layout transition!");
         }
 
         commandBuffer->pipelineBarrier(sourceStage, destinationStage, {}, {}, nullptr, barrier);
