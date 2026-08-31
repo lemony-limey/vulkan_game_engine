@@ -323,6 +323,10 @@ private:
 
         // Check if the required layers are supported by the Vulkan implementation.
         auto layerProperties    = m_context.enumerateInstanceLayerProperties();
+        for (auto prop : layerProperties)
+        {
+            std::cout << "layer: " << prop.layerName << '\n';
+        }
         auto unsupportedLayerIt = std::ranges::find_if(
             requiredLayers,
             [&layerProperties](auto const & requiredLayer)
@@ -343,9 +347,17 @@ private:
 
         // Get the required extensions.
         auto requiredExtensions = getRequiredInstanceExtensions();
+        for (auto const prop : requiredExtensions)
+        {
+            std::cout << "required instance extension: " << prop << '\n';
+        }
 
         // Check if the required extensions are supported by the Vulkan implementation.
         auto extensionProperties   = m_context.enumerateInstanceExtensionProperties();
+        for (auto const prop : extensionProperties)
+        {
+            std::cout << "instance extension: " << prop.extensionName << '\n';
+        }
         auto unsupportedPropertyIt =
                 std::ranges::find_if(
                     requiredExtensions,
@@ -449,17 +461,30 @@ private:
     bool isDeviceSuitable(vk::raii::PhysicalDevice const & physical_device)
     {
         // Check if the physicalDevice supports the Vulkan 1.3 API version
-        bool supportsVulkan1_3 = physical_device.getProperties().apiVersion >= VK_API_VERSION_1_3;
+        bool supportsVulkan1_3 = physical_device.getProperties2().properties.apiVersion >= VK_API_VERSION_1_3;
 
         // Check if any of the queue families support graphics operations
-        auto queueFamilies    = physical_device.getQueueFamilyProperties();
-        bool supportsGraphics = std::ranges::any_of(
-            queueFamilies,
-            [](auto const& qfp) { return !!(qfp.queueFlags & vk::QueueFlagBits::eGraphics); }
-        );
+        auto queueFamilies    = physical_device.getQueueFamilyProperties2();
+        bool supportsGraphics = false;
+        for (auto queue_family : queueFamilies)
+        {
+            if (queue_family.queueFamilyProperties.queueFlags & vk::QueueFlagBits::eGraphics)
+            {
+                supportsGraphics = true;
+                break;
+            }
+        }
+        // bool supportsGraphics = std::ranges::any_of(
+        //     queueFamilies,
+        //     [](auto const& qfp) { return !!(qfp.queueFlags & vk::QueueFlagBits::eGraphics); }
+        // );
 
         // Check if all required physicalDevice extensions are available
         auto availableDeviceExtensions     = physical_device.enumerateDeviceExtensionProperties();
+        for (auto ext : availableDeviceExtensions)
+        {
+            std::cout << "available device extension: " << ext.extensionName << "\n";
+        }
         bool supportsAllRequiredExtensions =
                 std::ranges::all_of(
                     m_requiredDeviceExtension,
@@ -499,6 +524,10 @@ private:
         {
             throw std::runtime_error("pickPhysicalDevice(): there are no Vulkan-compatible GPUs on the device");
         }
+        else
+        {
+            std::cout << "Physical devices found: " << physicalDevices.size() << std::endl;
+        }
 
         for (const auto & device : physicalDevices)
         {
@@ -519,10 +548,10 @@ private:
 
     vk::SampleCountFlagBits getMaxUsableSampleCount()
     {
-        vk::PhysicalDeviceProperties physicalDeviceProperties = m_physicalDevice.getProperties();
+        vk::PhysicalDeviceProperties2 physicalDeviceProperties = m_physicalDevice.getProperties2();
 
-        vk::SampleCountFlags counts = physicalDeviceProperties.limits.framebufferColorSampleCounts
-            & physicalDeviceProperties.limits.framebufferDepthSampleCounts;
+        vk::SampleCountFlags counts = physicalDeviceProperties.properties.limits.framebufferColorSampleCounts
+            & physicalDeviceProperties.properties.limits.framebufferDepthSampleCounts;
         if (counts & vk::SampleCountFlagBits::e64) { return vk::SampleCountFlagBits::e64; }
         if (counts & vk::SampleCountFlagBits::e32) { return vk::SampleCountFlagBits::e32; }
         if (counts & vk::SampleCountFlagBits::e16) { return vk::SampleCountFlagBits::e16; }

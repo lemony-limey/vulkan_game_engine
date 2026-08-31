@@ -2,6 +2,8 @@ cmake_minimum_required(VERSION 4.0)
 project(hello_triangle_vulkan)
 
 set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_MESSAGE_LOG_LEVEL STATUS)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 add_executable(hello_triangle_vulkan
         main.cpp
@@ -13,8 +15,8 @@ add_executable(hello_triangle_vulkan
 find_package(Vulkan REQUIRED glslc)
 
 # Require Vulkan version ≥ 1.3.256 (earliest version when the Vulkan module was available)
-if( ${Vulkan_VERSION} VERSION_LESS "1.3.256" )
-    message( FATAL_ERROR "Minimum required Vulkan version for C++ modules is 1.3.256. "
+if( ${Vulkan_VERSION} VERSION_LESS "1.4.357" )
+    message( FATAL_ERROR "Minimum required Vulkan version for C++ modules is 1.4.357. "
             "Found ${Vulkan_VERSION}."
     )
 endif()
@@ -25,7 +27,7 @@ if( NOT ${Vulkan_glslc} )
     )
 endif()
 
-if( ${Vulkan_VERSION} VERSION_GREATER_EQUAL "1.3.256" )
+if( ${Vulkan_VERSION} VERSION_GREATER_EQUAL "1.4.357" )
     message( STATUS "Found Vulkan version: ${Vulkan_VERSION}.")
 endif()
 
@@ -45,6 +47,8 @@ message( STATUS "Found slangcc: ${SLANGC_EXECUTABLE}" )
 
 # Compile vulkan shaders
 function (add_slang_shader_target TARGET)
+    message( STATUS "Found Vulkan: ${Vulkan_INCLUDE_DIRS}" )
+    message( STATUS "Found slangcc: ${SLANGC_EXECUTABLE}" )
     cmake_parse_arguments ("SHADER" "" "" "SOURCES" ${ARGN})
     set (ENTRY_POINTS -entry vertMain -entry fragMain)
     add_custom_command (
