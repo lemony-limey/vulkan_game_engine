@@ -474,10 +474,6 @@ private:
                 break;
             }
         }
-        // bool supportsGraphics = std::ranges::any_of(
-        //     queueFamilies,
-        //     [](auto const& qfp) { return !!(qfp.queueFlags & vk::QueueFlagBits::eGraphics); }
-        // );
 
         // Check if all required physicalDevice extensions are available
         auto availableDeviceExtensions     = physical_device.enumerateDeviceExtensionProperties();
@@ -506,10 +502,10 @@ private:
                 .template getFeatures2<vk::PhysicalDeviceFeatures2,
                     vk::PhysicalDeviceVulkan13Features,
                     vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>();
-        bool supportsRequiredFeatures = features.template get<vk::PhysicalDeviceFeatures2>().features.samplerAnisotropy
-                                    && features.template get<vk::PhysicalDeviceVulkan13Features>().dynamicRendering
-                                    && features.template get<vk::PhysicalDeviceVulkan13Features>().synchronization2
-                                    && features.template get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState;
+        bool supportsRequiredFeatures = features.get<vk::PhysicalDeviceFeatures2>().features.samplerAnisotropy
+                                    && features.get<vk::PhysicalDeviceVulkan13Features>().dynamicRendering
+                                    && features.get<vk::PhysicalDeviceVulkan13Features>().synchronization2
+                                    && features.get<vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>().extendedDynamicState;
 
         // Return true if the physicalDevice meets all the criteria
         return supportsVulkan1_3 && supportsGraphics && supportsAllRequiredExtensions && supportsRequiredFeatures;
@@ -524,10 +520,7 @@ private:
         {
             throw std::runtime_error("pickPhysicalDevice(): there are no Vulkan-compatible GPUs on the device");
         }
-        else
-        {
-            std::cout << "Physical devices found: " << physicalDevices.size() << std::endl;
-        }
+        std::cout << "Physical devices found: " << physicalDevices.size() << std::endl;
 
         for (const auto & device : physicalDevices)
         {
@@ -588,7 +581,7 @@ private:
                            vk::PhysicalDeviceVulkan13Features,
                            vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT>
             featureChain = {
-            {.features = { .sampleRateShading = true, .samplerAnisotropy = true } },                                                          // vk::PhysicalDeviceFeatures2
+            {.features = { .sampleRateShading = true, .samplerAnisotropy = true } },         // vk::PhysicalDeviceFeatures2
             {.shaderDrawParameters = true},                              // vk::PhysicalDeviceVulkan11Features
             {.synchronization2 = true, .dynamicRendering = true},        // vk::PhysicalDeviceVulkan13Features
             {.extendedDynamicState = true}                               // vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT
@@ -880,8 +873,9 @@ private:
     {
         // std::cout << "pwd: " << std::filesystem::current_path() << "\n";
         // std::cout << "file: " << filename << std::endl;
-        // ate = start reading at the end of the file; binary = interpret file
-        // as a binary (i.e., no text transformations).
+
+        // std::ios::ate    = start reading at the end of the file;
+        // std::ios::binary = interpret file as a binary (i.e., no text transformations).
         std::ifstream file(filename, std::ios::ate | std::ios::binary);
 
         if (!file.is_open())
@@ -1325,6 +1319,9 @@ private:
             throw std::runtime_error("createTextureImage(): failed to load texture image!");
         }
 
+        // Create the CPU-side staging buffer. This is host visible, meaning both the CPU and GPU can access it.
+        // When we want to move the data to the GPU, a GPU command will be issued to copy from this buffer into its own
+        // device-local buffer, which is on the GPU and cannot be seen by the CPU.
         auto [stagingBuffer, stagingBufferMemory] = createBuffer(
             imageSize,
             vk::BufferUsageFlagBits::eTransferSrc,
@@ -1646,10 +1643,22 @@ private:
     }
 
 
+    // The vertex buffer should ideally reside in GPU memory (device-local) as this is much more efficient for
+    // the GPU to access than if it was in CPU memory and had to be transferred over every time.
+    // To do this, staging buffers are used. The vertices from the program's memory are taken from the program and
+    // stored in host-visible CPU memory, which is also accessible to the GPU, and then a second staging buffer in
+    // GPU memory (device-local) is set up as the destination where the data in the CPU's staging buffer will be
+    // copied to.
+    // The GPU is issued a command to copy the data from the host-visible staging buffer to the device-local staging
+    // buffer, which is how the data reaches GPU memory, where it is no longer accessible to the CPU.
     void createVertexBuffer()
     {
         vk::DeviceSize bufferSize = sizeof(m_vertices[0]) * m_vertices.size();
 
+        // This is the host-visible staging buffer, which can be seen by both the CPU and GPU.
+        // Using data from here in the GPU is suboptimal in terms of performance, and this is used
+        // to store data temporarily which will then be transferred to a device-local (i.e., GPU-only)
+        // buffer in the GPU, which will be much faster.
         auto [stagingBuffer, stagingBufferMemory] = createBuffer(
             bufferSize,
             vk::BufferUsageFlagBits::eTransferSrc,
@@ -1682,6 +1691,7 @@ private:
             vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent
         );
 
+        // Transfer vertex data to the host-visible staging buffer.
         // Keep in mind that while the driver will know we have written this data to the buffer,
         // the GPU will not know until we call vk::raii::Queue::submit().
         void* dataStaging = stagingBufferMemory.mapMemory(0, bufferSize);
@@ -1828,6 +1838,7 @@ private:
     }
 
 
+    // Allocates a generic buffer and returns a handle
     std::pair<vk::raii::Buffer, vk::raii::DeviceMemory> createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::MemoryPropertyFlags properties)
     {
         vk::BufferCreateInfo bufferInfo{

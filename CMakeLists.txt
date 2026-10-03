@@ -9,6 +9,9 @@ add_executable(hello_triangle_vulkan
         main.cpp
         stb_image.h
         tiny_obj_loader.h
+        tiny_gltf_v3.c
+        tiny_gltf_v3.h
+        tinygltf_json_c.h
 )
 
 # Find Vulkan
